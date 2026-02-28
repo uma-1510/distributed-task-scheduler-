@@ -1,0 +1,42 @@
+syntax = "proto3";
+
+service WorkerService {
+  rpc AssignJob        (JobRequest)       returns (JobResponse);
+  rpc StreamJobOutput  (JobRequest)       returns (stream OutputChunk);
+  rpc CancelJob        (CancelRequest)    returns (CancelResponse);
+  rpc Heartbeat        (HeartbeatRequest) returns (HeartbeatResponse);
+  rpc Register         (RegisterRequest)  returns (RegisterResponse);
+  rpc GetStatus        (StatusRequest)    returns (StatusResponse);
+}
+
+message JobRequest {
+  string job_id   = 1;
+  string command  = 2;
+}
+
+message JobResponse {
+  string job_id = 1;
+  string status = 2;
+}
+
+message OutputChunk {
+  string job_id  = 1;
+  string line    = 2;
+  int32  seq_num = 3;
+}
+
+message CancelRequest  { string job_id   = 1; }
+message CancelResponse { bool   success  = 1; }
+
+message HeartbeatRequest  { string worker_id = 1; string status = 2; }
+message HeartbeatResponse { bool   acknowledged = 1; }
+
+message RegisterRequest {
+  string worker_id = 1;
+  string address   = 2;
+  int32  port      = 3;
+}
+message RegisterResponse { bool success = 1; }
+
+message StatusRequest  { string job_id   = 1; }
+message StatusResponse { string status   = 1; string output = 2; }
