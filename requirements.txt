@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+grpcio
+grpcio-tools
+sortedcontainers
+psycopg2-binary
+redis
+sqlalchemy
+python-dotenv
+pytest
