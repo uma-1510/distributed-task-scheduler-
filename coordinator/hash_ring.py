@@ -33,7 +33,7 @@ class ConsistentHashRing:
     def add_worker(self, worker_id: str, metadata: Optional[dict] = None):
         """Add worker with virtual nodes."""
         if worker_id in self.workers:
-            return
+            self.remove_worker(worker_id)
 
         self.workers[worker_id] = metadata or {}
 
