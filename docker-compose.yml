@@ -1,0 +1,97 @@
+version: "3.9"
+
+services:
+
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: scheduler_user
+      POSTGRES_PASSWORD: scheduler_pass
+      POSTGRES_DB: scheduler_db
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scheduler_user -d scheduler_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  coordinator:
+    build:
+      context: .
+      dockerfile: Dockerfile.coordinator
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://scheduler_user:scheduler_pass@postgres:5432/scheduler_db
+      REDIS_URL: redis://redis:6379
+      COORDINATOR_HOST: coordinator
+      COORDINATOR_PORT: 8000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    environment:
+      WORKER_ID: worker-1
+      GRPC_PORT: "50051"
+      WORKER_ADDRESS: worker-1
+      DATABASE_URL: postgresql://scheduler_user:scheduler_pass@postgres:5432/scheduler_db
+      COORDINATOR_HOST: coordinator
+      COORDINATOR_PORT: "8000"
+    depends_on:
+      - coordinator
+    ports:
+      - "50051:50051"
+
+  worker-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    environment:
+      WORKER_ID: worker-2
+      GRPC_PORT: "50051"
+      WORKER_ADDRESS: worker-2
+      DATABASE_URL: postgresql://scheduler_user:scheduler_pass@postgres:5432/scheduler_db
+      COORDINATOR_HOST: coordinator
+      COORDINATOR_PORT: "8000"
+    depends_on:
+      - coordinator
+    ports:
+      - "50052:50051"
+
+  worker-3:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    environment:
+      WORKER_ID: worker-3
+      GRPC_PORT: "50051"
+      WORKER_ADDRESS: worker-3
+      DATABASE_URL: postgresql://scheduler_user:scheduler_pass@postgres:5432/scheduler_db
+      COORDINATOR_HOST: coordinator
+      COORDINATOR_PORT: "8000"
+    depends_on:
+      - coordinator
+    ports:
+      - "50053:50051"
+
+volumes:
+  postgres_data:

@@ -8,3 +8,4 @@ redis
 sqlalchemy
 python-dotenv
 pytest
+requests

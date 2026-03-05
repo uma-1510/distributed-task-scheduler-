@@ -1,0 +1,21 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY proto/ ./proto/
+COPY worker/ ./worker/
+COPY common/ ./common/
+COPY coordinator/ ./coordinator/
+
+RUN python -m grpc_tools.protoc \
+    -I./proto \
+    --python_out=./proto \
+    --grpc_python_out=./proto \
+    proto/scheduler.proto && \
+    sed -i 's/import scheduler_pb2 as scheduler__pb2/from proto import scheduler_pb2 as scheduler__pb2/' proto/scheduler_pb2_grpc.py
+
+EXPOSE 50051
+CMD ["python", "worker/main.py"]
