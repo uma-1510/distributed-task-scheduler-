@@ -80,7 +80,10 @@ distributed-task-scheduler/
 │   └── config.py             # Environment config
 ├── tests/
 │   ├── test_hash_ring.py     # 7 unit tests for consistent hashing
-│   └── test_failure.py       # End-to-end failure scenario test
+│   ├── test_failure.py       # End-to-end failure scenario test
+│   └── test_chaos_summary.py # Unit tests for chaos-test result parsing
+├── chaos_test.py             # Automated worker-kill chaos test
+├── chaos_test_summary.py     # Results JSON → markdown summary table
 ├── docker-compose.yml        # Full system in one command
 ├── Dockerfile.coordinator
 └── Dockerfile.worker
@@ -201,6 +204,50 @@ docker compose stop worker-2
 curl http://localhost:8000/jobs
 curl http://localhost:8000/workers
 ```
+
+### Automated chaos testing
+
+`chaos_test.py` automates the manual failure simulation above: it repeatedly
+kills a worker mid-job via `docker compose stop/start` and confirms the
+coordinator detects the failure and reassigns the job, instead of a human
+watching curl output once.
+
+```bash
+python3 chaos_test.py --runs 50 --workers worker-1,worker-2,worker-3 --sleep-seconds 12
+```
+
+This writes a `chaos_test_results.json` evidence file, which
+`chaos_test_summary.py` turns into a readable table:
+
+```bash
+python3 chaos_test_summary.py chaos_test_results.json
+```
+
+**Results from a 50-run local test** (3 workers, cycling which one gets
+killed each run):
+
+| Metric | Value |
+|---|---|
+| Total runs | 50 |
+| Attempted (job actually landed on the targeted worker) | 19 |
+| Passed | 19 |
+| Failed | 0 |
+| Success rate | 100% |
+| Avg reassignment latency | 21.7s |
+
+| Worker killed | Passed | Failed |
+|---|---|---|
+| worker-1 | 6 | 0 |
+| worker-2 | 7 | 0 |
+| worker-3 | 6 | 0 |
+
+The other 31 runs were skipped, not failures — the hash ring routed that
+run's job to a different worker than the one the script planned to kill, so
+nothing was actually tested that run. With only 3 workers, roughly 1 in 3
+runs land on target, which is why 50 runs were needed to get 19 real
+reassignment events. The reassignment latency (~21.7s average) lines up with
+the heartbeat detection window: a 15-second timeout for 3 missed heartbeats,
+plus time for the monitor's next check cycle.
 
 ### Run hash ring unit tests
 ```bash
