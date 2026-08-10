@@ -1,5 +1,6 @@
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from common.config import HEARTBEAT_TIMEOUT, WORKER_STARTUP_GRACE
 from common.models import WorkerStatus
@@ -11,6 +12,16 @@ class HeartbeatMonitor:
         self.ring        = ring
         self.reassigner  = reassigner
         self._stop_event = threading.Event()
+        # Reassignment (which does its own DB writes + gRPC routing calls
+        # per stuck job) used to run synchronously inside the monitor loop.
+        # If one dead worker had a lot of stuck jobs, or a route() call hit
+        # the new gRPC timeout from issue #5, that could delay the *next*
+        # 5-second check cycle — meaning other workers' failures would be
+        # detected late. Running it on a small executor instead decouples
+        # "detect a dead worker" from "finish reassigning its jobs".
+        self._reassign_executor = ThreadPoolExecutor(
+            max_workers=5, thread_name_prefix="reassign"
+        )
 
     def start(self):
         thread = threading.Thread(
@@ -23,6 +34,7 @@ class HeartbeatMonitor:
 
     def stop(self):
         self._stop_event.set()
+        self._reassign_executor.shutdown(wait=False)
 
     def _monitor_loop(self):
         while not self._stop_event.is_set():
@@ -87,4 +99,20 @@ class HeartbeatMonitor:
         db.update_workers_status_batch(worker_ids, WorkerStatus.DEAD)
 
         for worker_id in worker_ids:
-            self.reassigner.reassign_jobs_from(worker_id)
+            future = self._reassign_executor.submit(self._reassign_safely, worker_id)
+            # Attach a callback rather than calling future.result() here —
+            # that would just re-introduce the blocking we're trying to
+            # remove.
+            future.add_done_callback(self._log_reassign_outcome)
+
+    def _reassign_safely(self, worker_id: str):
+        self.reassigner.reassign_jobs_from(worker_id)
+        return worker_id
+
+    @staticmethod
+    def _log_reassign_outcome(future):
+        try:
+            worker_id = future.result()
+            print(f"[monitor] reassignment finished for {worker_id}")
+        except Exception as e:
+            print(f"[monitor] reassignment task raised: {e}")
