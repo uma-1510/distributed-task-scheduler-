@@ -45,6 +45,11 @@ class HeartbeatMonitor:
         workers = db.get_all_workers()
         now     = datetime.now()
 
+        # Collect this cycle's dead workers instead of writing to the DB
+        # inside the loop — one batch UPDATE at the end instead of one
+        # round-trip per dead worker. See issue #6.
+        newly_dead = []
+
         for worker in workers:
             worker_id      = worker["worker_id"]
             status         = worker["status"]
@@ -66,11 +71,20 @@ class HeartbeatMonitor:
 
             if seconds_since > HEARTBEAT_TIMEOUT:
                 print(f"[monitor] ⚠️  {worker_id} missed heartbeat ({seconds_since:.1f}s) — marking DEAD")
-                self._handle_dead_worker(worker_id)
+                newly_dead.append(worker_id)
             else:
                 print(f"[monitor] ✅ {worker_id} healthy ({seconds_since:.1f}s since last ping)")
 
-    def _handle_dead_worker(self, worker_id: str):
-        self.ring.remove_worker(worker_id)
-        db.update_worker_status(worker_id, WorkerStatus.DEAD)
-        self.reassigner.reassign_jobs_from(worker_id)
+        if newly_dead:
+            self._handle_dead_workers(newly_dead)
+
+    def _handle_dead_workers(self, worker_ids: list[str]):
+        for worker_id in worker_ids:
+            self.ring.remove_worker(worker_id)
+
+        # Single UPDATE for every worker that died this cycle, instead of
+        # one per worker.
+        db.update_workers_status_batch(worker_ids, WorkerStatus.DEAD)
+
+        for worker_id in worker_ids:
+            self.reassigner.reassign_jobs_from(worker_id)
