@@ -1,4 +1,11 @@
 # Routes jobs to workers via gRPC
+#
+# Known follow-up gap (see issue #5's PR discussion): a worker removed from
+# the ring due to a timeout/UNAVAILABLE doesn't currently find its way back
+# in on its own — it only re-registers at process startup. If it was a
+# transient blip (e.g. a GC pause) rather than an actual crash, the worker
+# stays excluded from routing until it's restarted. Worth a dedicated
+# "re-add on next successful heartbeat" fix as a separate issue.
 
 import grpc
 import sys
