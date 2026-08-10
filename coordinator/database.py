@@ -157,91 +157,83 @@ def get_healthy_workers() -> list[dict]:
 
 
 def create_job(command: str) -> str:
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO jobs (command, status) VALUES (%s, 'pending') RETURNING job_id;",
-        (command,)
-    )
-    job_id = str(cur.fetchone()[0])
-    cur.close()
-    conn.close()
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO jobs (command, status) VALUES (%s, 'pending') RETURNING job_id;",
+            (command,)
+        )
+        job_id = str(cur.fetchone()[0])
+        cur.close()
     return job_id
 
 
 def update_job_assigned(job_id: str, worker_id: str):
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute(
-        "UPDATE jobs SET status = 'assigned', assigned_to = %s WHERE job_id = %s;",
-        (worker_id, job_id)
-    )
-    cur.close()
-    conn.close()
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE jobs SET status = 'assigned', assigned_to = %s WHERE job_id = %s;",
+            (worker_id, job_id)
+        )
+        cur.close()
 
 
 def update_job_running(job_id: str):
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute(
-        "UPDATE jobs SET status = 'running', started_at = NOW() WHERE job_id = %s;",
-        (job_id,)
-    )
-    cur.close()
-    conn.close()
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE jobs SET status = 'running', started_at = NOW() WHERE job_id = %s;",
+            (job_id,)
+        )
+        cur.close()
 
 
 def update_job_completed(job_id: str, output: str, exit_code: int):
     status = "completed" if exit_code == 0 else "failed"
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute(
-        "UPDATE jobs SET status = %s, output = %s, exit_code = %s, completed_at = NOW() WHERE job_id = %s;",
-        (status, output, exit_code, job_id)
-    )
-    cur.close()
-    conn.close()
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE jobs SET status = %s, output = %s, exit_code = %s, completed_at = NOW() WHERE job_id = %s;",
+            (status, output, exit_code, job_id)
+        )
+        cur.close()
 
 
 def get_job(job_id: str) -> dict | None:
-    conn = get_connection()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("SELECT * FROM jobs WHERE job_id = %s;", (job_id,))
-    row = cur.fetchone()
-    cur.close()
-    conn.close()
+    with get_conn() as conn:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SELECT * FROM jobs WHERE job_id = %s;", (job_id,))
+        row = cur.fetchone()
+        cur.close()
     return dict(row) if row else None
 
 
 def get_all_jobs() -> list[dict]:
-    conn = get_connection()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("SELECT * FROM jobs ORDER BY created_at DESC;")
-    rows = [dict(row) for row in cur.fetchall()]
-    cur.close()
-    conn.close()
+    with get_conn() as conn:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SELECT * FROM jobs ORDER BY created_at DESC;")
+        rows = [dict(row) for row in cur.fetchall()]
+        cur.close()
     return rows
 
 
 def get_jobs_for_worker(worker_id: str, statuses: list[str]) -> list[dict]:
-    conn = get_connection()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute(
-        "SELECT * FROM jobs WHERE assigned_to = %s AND status = ANY(%s);",
-        (worker_id, statuses)
-    )
-    rows = [dict(row) for row in cur.fetchall()]
-    cur.close()
-    conn.close()
+    with get_conn() as conn:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(
+            "SELECT * FROM jobs WHERE assigned_to = %s AND status = ANY(%s);",
+            (worker_id, statuses)
+        )
+        rows = [dict(row) for row in cur.fetchall()]
+        cur.close()
     return rows
 
 
 def mark_job_pending(job_id: str):
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute(
-        "UPDATE jobs SET status = 'pending', assigned_to = NULL, started_at = NULL WHERE job_id = %s;",
-        (job_id,)
-    )
-    cur.close()
-    conn.close()
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE jobs SET status = 'pending', assigned_to = NULL, started_at = NULL WHERE job_id = %s;",
+            (job_id,)
+        )
+        cur.close()
