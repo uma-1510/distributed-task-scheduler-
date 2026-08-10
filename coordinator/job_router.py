@@ -39,12 +39,25 @@ class JobRouter:
         print(f"[router] routing job {job_id} → {worker_id} at {address}")
 
         # Open gRPC channel and assign job
-        with grpc.insecure_channel(address) as channel:
-            stub = scheduler_pb2_grpc.WorkerServiceStub(channel)
-            response = stub.AssignJob(
-                scheduler_pb2.JobRequest(job_id=job_id, command=command),
-                timeout=ASSIGN_JOB_TIMEOUT_SECONDS,
-            )
+        try:
+            with grpc.insecure_channel(address) as channel:
+                stub = scheduler_pb2_grpc.WorkerServiceStub(channel)
+                response = stub.AssignJob(
+                    scheduler_pb2.JobRequest(job_id=job_id, command=command),
+                    timeout=ASSIGN_JOB_TIMEOUT_SECONDS,
+                )
+        except grpc.RpcError as e:
+            if e.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
+                # This worker isn't responding even though the heartbeat
+                # monitor hasn't marked it DEAD yet (still within its grace
+                # window). Pull it out of the ring immediately so the next
+                # route() call doesn't pick it again — the heartbeat monitor
+                # will catch up and mark it DEAD/reassign its other jobs on
+                # its own schedule.
+                print(f"[router] ⏱️  {worker_id} timed out after {ASSIGN_JOB_TIMEOUT_SECONDS}s — removing from ring")
+                self.ring.remove_worker(worker_id)
+                raise RuntimeError(f"Worker {worker_id} timed out on AssignJob") from e
+            raise RuntimeError(f"Worker {worker_id} gRPC call failed: {e.details()}") from e
 
         # Update job state in DB
         db.update_job_assigned(job_id, worker_id)
