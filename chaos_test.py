@@ -18,61 +18,107 @@ import requests
 
 COORDINATOR_URL = "http://localhost:8000"
 REASSIGNMENT_WAIT_SECONDS = 25
+HTTP_TIMEOUT_SECONDS = 10
+DOCKER_TIMEOUT_SECONDS = 30
+
+
+class ChaosTestError(Exception):
+    """A chaos-test step failed in a way that should abort the current run
+    (coordinator unreachable, Docker not running, etc.) rather than crash
+    the whole script."""
 
 
 def submit_job(command):
-    r = requests.post(f"{COORDINATOR_URL}/jobs", json={"command": command})
-    r.raise_for_status()
-    return r.json()
+    try:
+        r = requests.post(
+            f"{COORDINATOR_URL}/jobs", json={"command": command}, timeout=HTTP_TIMEOUT_SECONDS
+        )
+        r.raise_for_status()
+        return r.json()
+    except requests.exceptions.RequestException as e:
+        raise ChaosTestError(f"failed to submit job (is the coordinator up? {COORDINATOR_URL}): {e}") from e
 
 
 def get_job(job_id):
-    r = requests.get(f"{COORDINATOR_URL}/jobs/{job_id}")
-    r.raise_for_status()
-    return r.json()
+    try:
+        r = requests.get(f"{COORDINATOR_URL}/jobs/{job_id}", timeout=HTTP_TIMEOUT_SECONDS)
+        r.raise_for_status()
+        return r.json()
+    except requests.exceptions.RequestException as e:
+        raise ChaosTestError(f"failed to fetch job {job_id}: {e}") from e
+
+
+def _run_docker_compose(*args, worker_name):
+    try:
+        result = subprocess.run(
+            ["docker", "compose", *args, worker_name],
+            capture_output=True,
+            text=True,
+            timeout=DOCKER_TIMEOUT_SECONDS,
+        )
+    except FileNotFoundError as e:
+        raise ChaosTestError("docker CLI not found — is Docker installed and on PATH?") from e
+    except subprocess.TimeoutExpired as e:
+        raise ChaosTestError(f"'docker compose {' '.join(args)} {worker_name}' timed out") from e
+
+    if result.returncode != 0:
+        raise ChaosTestError(
+            f"'docker compose {' '.join(args)} {worker_name}' failed: {result.stderr.strip()}"
+        )
 
 
 def kill_worker(worker_name):
-    subprocess.run(["docker", "compose", "stop", worker_name])
+    _run_docker_compose("stop", worker_name=worker_name)
 
 
 def restart_worker(worker_name):
-    subprocess.run(["docker", "compose", "start", worker_name])
+    _run_docker_compose("start", worker_name=worker_name)
 
 
 def run_once(run_number, total_runs, worker_to_kill, sleep_seconds):
     print(f"\n=== Run {run_number}/{total_runs} (target: {worker_to_kill}) ===")
 
-    job = submit_job(f"sleep {sleep_seconds} && echo chaos_run_{run_number}")
-    job_id = job["job_id"]
-    print(f"submitted {job_id} -> {job['worker_id']}")
+    try:
+        job = submit_job(f"sleep {sleep_seconds} && echo chaos_run_{run_number}")
+        job_id = job["job_id"]
+        print(f"submitted {job_id} -> {job['worker_id']}")
 
-    if job["worker_id"] != worker_to_kill:
-        print(f"job landed on {job['worker_id']}, not {worker_to_kill} — skipping this run")
-        return None
+        if job["worker_id"] != worker_to_kill:
+            print(f"job landed on {job['worker_id']}, not {worker_to_kill} — skipping this run")
+            return None
 
-    time.sleep(2)
-    print(f"killing {worker_to_kill}...")
-    kill_worker(worker_to_kill)
+        time.sleep(2)
+        print(f"killing {worker_to_kill}...")
+        kill_worker(worker_to_kill)
 
-    reassigned = False
-    for elapsed in range(REASSIGNMENT_WAIT_SECONDS):
-        time.sleep(1)
-        job_state = get_job(job_id)
-        assigned_to = job_state["assigned_to"]
-        if assigned_to and assigned_to != worker_to_kill:
-            print(f"reassigned to {assigned_to} after {elapsed + 1}s")
-            reassigned = True
-            break
+        reassigned = False
+        for elapsed in range(REASSIGNMENT_WAIT_SECONDS):
+            time.sleep(1)
+            job_state = get_job(job_id)
+            assigned_to = job_state["assigned_to"]
+            if assigned_to and assigned_to != worker_to_kill:
+                print(f"reassigned to {assigned_to} after {elapsed + 1}s")
+                reassigned = True
+                break
 
-    if not reassigned:
-        print(f"job was NOT reassigned within {REASSIGNMENT_WAIT_SECONDS}s")
+        if not reassigned:
+            print(f"job was NOT reassigned within {REASSIGNMENT_WAIT_SECONDS}s")
 
-    print(f"restarting {worker_to_kill}...")
-    restart_worker(worker_to_kill)
-    time.sleep(5)  # give it time to re-register before the next run
+        print(f"restarting {worker_to_kill}...")
+        restart_worker(worker_to_kill)
+        time.sleep(5)  # give it time to re-register before the next run
 
-    return reassigned
+        return reassigned
+
+    except ChaosTestError as e:
+        print(f"run {run_number} FAILED: {e}")
+        # Best-effort: don't leave the worker down for the next run just
+        # because this one hit an error partway through.
+        try:
+            restart_worker(worker_to_kill)
+        except ChaosTestError as restart_error:
+            print(f"  also failed to restart {worker_to_kill}: {restart_error}")
+        return False
 
 
 def parse_args():
