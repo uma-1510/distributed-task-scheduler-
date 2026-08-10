@@ -11,8 +11,10 @@ process and watching curl output.
 """
 
 import argparse
+import json
 import subprocess
 import time
+from pathlib import Path
 
 import requests
 
@@ -78,20 +80,27 @@ def restart_worker(worker_name):
 def run_once(run_number, total_runs, worker_to_kill, sleep_seconds):
     print(f"\n=== Run {run_number}/{total_runs} (target: {worker_to_kill}) ===")
 
+    result = {"run": run_number, "worker_killed": worker_to_kill}
+
     try:
         job = submit_job(f"sleep {sleep_seconds} && echo chaos_run_{run_number}")
         job_id = job["job_id"]
+        result["job_id"] = job_id
         print(f"submitted {job_id} -> {job['worker_id']}")
 
         if job["worker_id"] != worker_to_kill:
             print(f"job landed on {job['worker_id']}, not {worker_to_kill} — skipping this run")
-            return None
+            result["status"] = "skipped"
+            result["reason"] = f"job routed to {job['worker_id']} instead of {worker_to_kill}"
+            return result
 
         time.sleep(2)
         print(f"killing {worker_to_kill}...")
         kill_worker(worker_to_kill)
+        kill_time = time.monotonic()
 
         reassigned = False
+        assigned_to = None
         for elapsed in range(REASSIGNMENT_WAIT_SECONDS):
             time.sleep(1)
             job_state = get_job(job_id)
@@ -101,14 +110,20 @@ def run_once(run_number, total_runs, worker_to_kill, sleep_seconds):
                 reassigned = True
                 break
 
-        if not reassigned:
-            print(f"job was NOT reassigned within {REASSIGNMENT_WAIT_SECONDS}s")
-
         print(f"restarting {worker_to_kill}...")
         restart_worker(worker_to_kill)
         time.sleep(5)  # give it time to re-register before the next run
 
-        return reassigned
+        if reassigned:
+            result["status"] = "passed"
+            result["reassigned_to"] = assigned_to
+            result["reassignment_latency_seconds"] = round(time.monotonic() - kill_time, 2)
+        else:
+            print(f"job was NOT reassigned within {REASSIGNMENT_WAIT_SECONDS}s")
+            result["status"] = "failed"
+            result["reason"] = f"not reassigned within {REASSIGNMENT_WAIT_SECONDS}s"
+
+        return result
 
     except ChaosTestError as e:
         print(f"run {run_number} FAILED: {e}")
@@ -118,7 +133,9 @@ def run_once(run_number, total_runs, worker_to_kill, sleep_seconds):
             restart_worker(worker_to_kill)
         except ChaosTestError as restart_error:
             print(f"  also failed to restart {worker_to_kill}: {restart_error}")
-        return False
+        result["status"] = "error"
+        result["reason"] = str(e)
+        return result
 
 
 def parse_args():
@@ -141,6 +158,12 @@ def parse_args():
         default=20,
         help="how long each test job sleeps for, in seconds (default: 20)",
     )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default="chaos_test_results.json",
+        help="path to write the JSON results file to (default: chaos_test_results.json)",
+    )
     return parser.parse_args()
 
 
@@ -157,9 +180,33 @@ def main():
         for i in range(1, args.runs + 1)
     ]
 
-    completed = [r for r in results if r is not None]
-    passed = completed.count(True)
-    print(f"\n{passed}/{len(completed)} runs passed ({results.count(None)} skipped)")
+    summary = {
+        "passed": sum(1 for r in results if r["status"] == "passed"),
+        "failed": sum(1 for r in results if r["status"] == "failed"),
+        "skipped": sum(1 for r in results if r["status"] == "skipped"),
+        "errored": sum(1 for r in results if r["status"] == "error"),
+    }
+    print(
+        f"\n{summary['passed']} passed, {summary['failed']} failed, "
+        f"{summary['skipped']} skipped, {summary['errored']} errored "
+        f"(of {len(results)} runs)"
+    )
+
+    output_path = Path(args.output)
+    output_path.write_text(
+        json.dumps(
+            {
+                "runs": args.runs,
+                "workers": workers,
+                "sleep_seconds": args.sleep_seconds,
+                "summary": summary,
+                "results": results,
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    print(f"results written to {output_path}")
 
 
 if __name__ == "__main__":
