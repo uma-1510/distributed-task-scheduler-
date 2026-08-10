@@ -36,14 +36,29 @@ class WorkerService(scheduler_pb2_grpc.WorkerServiceServicer):
         return scheduler_pb2.HeartbeatResponse(acknowledged=True)
 
 
-def send_heartbeats(worker_id: str):
+# Sending each heartbeat used to block send_heartbeats()'s own loop thread
+# on requests.post() — if the coordinator was slow, the *next* heartbeat
+# would fire late too, since time.sleep(HEARTBEAT_INTERVAL) only ran after
+# the blocking call returned. A worker could get marked DEAD purely because
+# the coordinator was busy, not because the worker itself was unhealthy.
+# Sending on a dedicated one-thread executor instead means the loop always
+# sleeps exactly HEARTBEAT_INTERVAL regardless of how long the coordinator
+# takes to respond. See issue #2.
+heartbeat_executor = futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="heartbeat-sender")
+
+
+def _send_one_heartbeat(worker_id: str):
     url = f"http://{COORDINATOR_HOST}:{COORDINATOR_PORT}/workers/{worker_id}/heartbeat"
+    try:
+        requests.post(url, timeout=3)
+        print(f"[heartbeat] ping sent — {worker_id}")
+    except Exception as e:
+        print(f"[heartbeat] failed to reach coordinator: {e}")
+
+
+def send_heartbeats(worker_id: str):
     while True:
-        try:
-            requests.post(url, timeout=3)
-            print(f"[heartbeat] ping sent — {worker_id}")
-        except Exception as e:
-            print(f"[heartbeat] failed to reach coordinator: {e}")
+        heartbeat_executor.submit(_send_one_heartbeat, worker_id)
         time.sleep(HEARTBEAT_INTERVAL)
 
 
