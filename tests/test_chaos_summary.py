@@ -7,13 +7,16 @@
 # results JSON file into the markdown summary, which don't need a cluster.
 
 import json
+import math
 import os
-import sys
 import tempfile
 
-sys.path.insert(0, '.')
-
 from chaos_test_summary import compute_summary, load_results, to_markdown
+
+# Run with `python -m pytest tests/test_chaos_summary.py` (or `python -m
+# tests.test_chaos_summary`) from the repo root — pytest's import mode
+# resolves the top-level chaos_test_summary module via tests/__init__.py
+# without needing to mutate sys.path here.
 
 
 def test_compute_summary_basic():
@@ -39,8 +42,8 @@ def test_compute_summary_basic():
     assert summary["failed"] == 1
     assert summary["errored"] == 1
     assert summary["skipped"] == 1
-    assert summary["success_rate_pct"] == 50.0
-    assert summary["avg_reassignment_latency_seconds"] == 15.0
+    assert math.isclose(summary["success_rate_pct"], 50.0)
+    assert math.isclose(summary["avg_reassignment_latency_seconds"], 15.0)
     print("PASSED")
 
 
@@ -49,7 +52,7 @@ def test_compute_summary_empty_results():
     summary = compute_summary({"results": []})
     assert summary["total_runs"] == 0
     assert summary["attempted"] == 0
-    assert summary["success_rate_pct"] == 0.0
+    assert math.isclose(summary["success_rate_pct"], 0.0)
     assert summary["avg_reassignment_latency_seconds"] is None
     print("PASSED")
 
@@ -60,7 +63,7 @@ def test_compute_summary_all_skipped():
                           "reason": "routing miss"}]}
     summary = compute_summary(data)
     assert summary["attempted"] == 0
-    assert summary["success_rate_pct"] == 0.0
+    assert math.isclose(summary["success_rate_pct"], 0.0)
     print("PASSED")
 
 
@@ -91,7 +94,11 @@ def test_to_markdown_contains_key_fields():
     md = to_markdown(summary)
     assert "Chaos Test Summary" in md
     assert "Success rate" in md
-    assert "100.0%" in md
+    assert math.isclose(summary["success_rate_pct"], 100.0)
+    # Check the actual computed value made it into the markdown, rather than
+    # hardcoding an expected format (e.g. "100.0%" vs "100%") that could
+    # legitimately change independently of this test's intent.
+    assert str(summary["success_rate_pct"]) in md
     assert "worker-1" in md
     print("PASSED")
 
@@ -112,10 +119,10 @@ def test_load_results_roundtrip():
              "reassignment_latency_seconds": 9.0}
         ]
     }
-    fd, path = tempfile.mkstemp(suffix=".json")
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump(fixture, f)
+        path = f.name
     try:
-        with os.fdopen(fd, "w") as f:
-            json.dump(fixture, f)
         assert load_results(path) == fixture
     finally:
         os.remove(path)
