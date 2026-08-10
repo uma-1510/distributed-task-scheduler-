@@ -58,6 +58,14 @@ HEARTBEAT_SEND_TIMEOUT_SECONDS = 10
 # worker is dead).
 HEARTBEAT_QUEUE_WARNING_THRESHOLD = 5
 
+# Hard cap on how many pings can queue up. Without this, a coordinator
+# that's unreachable for hours/days would mean this worker submits one new
+# task every 5s forever, growing the queue without bound. Once we're at the
+# cap, skip submitting new pings until the backlog drains — the queued ones
+# will still fire in order, just later, and one fresh ping the moment the
+# coordinator comes back matters more than N stale ones queued behind it.
+HEARTBEAT_QUEUE_MAX_DEPTH = 100
+
 
 def _send_one_heartbeat(worker_id: str):
     url = f"http://{COORDINATOR_HOST}:{COORDINATOR_PORT}/workers/{worker_id}/heartbeat"
@@ -73,7 +81,12 @@ def send_heartbeats(worker_id: str):
         queue_depth = heartbeat_executor._work_queue.qsize()
         if queue_depth > HEARTBEAT_QUEUE_WARNING_THRESHOLD:
             print(f"[heartbeat] ⚠️  {queue_depth} pings backed up — coordinator may be unreachable")
-        heartbeat_executor.submit(_send_one_heartbeat, worker_id)
+
+        if queue_depth < HEARTBEAT_QUEUE_MAX_DEPTH:
+            heartbeat_executor.submit(_send_one_heartbeat, worker_id)
+        else:
+            print(f"[heartbeat] queue at max depth ({HEARTBEAT_QUEUE_MAX_DEPTH}) — skipping this ping")
+
         time.sleep(HEARTBEAT_INTERVAL)
 
 
