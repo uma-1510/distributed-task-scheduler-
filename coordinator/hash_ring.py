@@ -1,4 +1,10 @@
 # Consistent hashing implementation
+#
+# _hash() uses xxHash (64-bit output) rather than MD5 (128-bit) — see issue
+# #11. Trades hash space (2^64 vs 2^128) for speed; 2^64 is still far more
+# than enough to avoid meaningful collision risk at any vnode count this
+# system would realistically run (150 vnodes/worker × dozens of workers is
+# nowhere near where a 64-bit space's birthday bound would start to matter).
 
 import xxhash
 from sortedcontainers import SortedDict
