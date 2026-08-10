@@ -1,66 +1,105 @@
+from contextlib import contextmanager
+
 import psycopg2
 import psycopg2.extras
-from common.config import DATABASE_URL
+import psycopg2.pool
+from common.config import DATABASE_URL, DB_POOL_MIN_CONN, DB_POOL_MAX_CONN
 from common.models import JobStatus, WorkerStatus
+
+# A module-level pool, created lazily on first use. Every DB function in this
+# file used to call psycopg2.connect()/close() per query — at 3+ workers
+# heartbeating every 5s plus job traffic, that's dozens of fresh TCP +
+# Postgres-auth handshakes per second for no reason. The pool keeps a small
+# set of live connections open and hands them out/back instead.
+_pool = None
+
+
+def _get_pool():
+    global _pool
+    if _pool is None:
+        _pool = psycopg2.pool.SimpleConnectionPool(
+            DB_POOL_MIN_CONN, DB_POOL_MAX_CONN, DATABASE_URL
+        )
+    return _pool
+
+
+@contextmanager
+def get_conn():
+    """Check out a pooled connection, auto-return it when the block exits
+    (including on exception) instead of every call site managing its own
+    connect()/close()."""
+    pool = _get_pool()
+    conn = pool.getconn()
+    conn.autocommit = True
+    try:
+        yield conn
+    finally:
+        pool.putconn(conn)
+
+
+def close_pool():
+    """Call on coordinator shutdown so connections don't leak past process
+    lifetime (mainly matters for tests that spin up/tear down repeatedly)."""
+    global _pool
+    if _pool is not None:
+        _pool.closeall()
+        _pool = None
 
 
 def get_connection():
+    """Kept for any external callers, but no longer used internally in this
+    file — prefer the `get_conn()` context manager, which returns the
+    connection to the pool instead of closing it."""
     conn = psycopg2.connect(DATABASE_URL)
     conn.autocommit = True
     return conn
 
 
 def create_tables():
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS workers (
-        worker_id       VARCHAR PRIMARY KEY,
-        address         VARCHAR NOT NULL,
-        port            INTEGER NOT NULL,
-        status          VARCHAR NOT NULL DEFAULT 'healthy',
-        last_heartbeat  TIMESTAMPTZ,
-        registered_at   TIMESTAMP DEFAULT NOW()
-    );
-    CREATE TABLE IF NOT EXISTS jobs (
-        job_id        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        command       TEXT NOT NULL,
-        status        VARCHAR NOT NULL DEFAULT 'pending',
-        assigned_to   VARCHAR REFERENCES workers(worker_id),
-        output        TEXT,
-        exit_code     INTEGER,
-        created_at    TIMESTAMP DEFAULT NOW(),
-        started_at    TIMESTAMP,
-        completed_at  TIMESTAMP
-    );
-    """)
-    cur.close()
-    conn.close()
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS workers (
+            worker_id       VARCHAR PRIMARY KEY,
+            address         VARCHAR NOT NULL,
+            port            INTEGER NOT NULL,
+            status          VARCHAR NOT NULL DEFAULT 'healthy',
+            last_heartbeat  TIMESTAMPTZ,
+            registered_at   TIMESTAMP DEFAULT NOW()
+        );
+        CREATE TABLE IF NOT EXISTS jobs (
+            job_id        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            command       TEXT NOT NULL,
+            status        VARCHAR NOT NULL DEFAULT 'pending',
+            assigned_to   VARCHAR REFERENCES workers(worker_id),
+            output        TEXT,
+            exit_code     INTEGER,
+            created_at    TIMESTAMP DEFAULT NOW(),
+            started_at    TIMESTAMP,
+            completed_at  TIMESTAMP
+        );
+        """)
+        cur.close()
     print("[db] tables ready")
 
 
 def reset_all_workers():
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("UPDATE workers SET status = 'dead', last_heartbeat = NOW(), registered_at = NOW();")
-    cur.close()
-    conn.close()
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("UPDATE workers SET status = 'dead', last_heartbeat = NOW(), registered_at = NOW();")
+        cur.close()
     print("[db] all workers reset — timestamps refreshed")
 
+
 def reset_worker_heartbeats():
-    conn = get_connection()
-    cur = conn.cursor()
-
-    cur.execute("""
-        UPDATE workers
-        SET last_heartbeat = NOW(),
-            status = 'alive'
-    """)
-
-    conn.commit()
-    cur.close()
-    conn.close()
-
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            UPDATE workers
+            SET last_heartbeat = NOW(),
+                status = 'alive'
+        """)
+        cur.close()
     print("[db] reset all worker heartbeats on startup")
 
 def upsert_worker(worker_id: str, address: str, port: int):
