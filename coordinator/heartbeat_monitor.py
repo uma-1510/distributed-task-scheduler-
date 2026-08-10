@@ -1,3 +1,10 @@
+"""Background heartbeat monitor.
+
+Dead-worker DB status updates are batched (one UPDATE per check cycle, not
+one per dead worker) and reassignment runs on a background executor rather
+than blocking the monitor loop — see issue #6.
+"""
+
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
