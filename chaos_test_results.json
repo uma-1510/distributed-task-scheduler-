@@ -1,0 +1,386 @@
+{
+  "runs": 50,
+  "workers": [
+    "worker-1",
+    "worker-2",
+    "worker-3"
+  ],
+  "sleep_seconds": 12,
+  "summary": {
+    "passed": 19,
+    "failed": 0,
+    "skipped": 31,
+    "errored": 0
+  },
+  "results": [
+    {
+      "run": 1,
+      "worker_killed": "worker-1",
+      "job_id": "b8e0694d-ade8-4b12-ad1a-8a06fd541c16",
+      "status": "skipped",
+      "reason": "job routed to worker-2 instead of worker-1"
+    },
+    {
+      "run": 2,
+      "worker_killed": "worker-2",
+      "job_id": "50f080e9-7343-4dc0-ac27-4f0bf724135b",
+      "status": "skipped",
+      "reason": "job routed to worker-1 instead of worker-2"
+    },
+    {
+      "run": 3,
+      "worker_killed": "worker-3",
+      "job_id": "70ff3c1f-bf64-46b2-afdd-a54ee8e33033",
+      "status": "skipped",
+      "reason": "job routed to worker-1 instead of worker-3"
+    },
+    {
+      "run": 4,
+      "worker_killed": "worker-1",
+      "job_id": "b3303740-b58f-4b56-9b70-83bbc4795289",
+      "status": "passed",
+      "reassigned_to": "worker-3",
+      "reassignment_latency_seconds": 21.13
+    },
+    {
+      "run": 5,
+      "worker_killed": "worker-2",
+      "job_id": "68a8a3b1-8f80-422f-ba51-6b730fc40919",
+      "status": "passed",
+      "reassigned_to": "worker-1",
+      "reassignment_latency_seconds": 21.01
+    },
+    {
+      "run": 6,
+      "worker_killed": "worker-3",
+      "job_id": "703bd6a3-d0d5-4a69-90de-e16a60893b37",
+      "status": "passed",
+      "reassigned_to": "worker-2",
+      "reassignment_latency_seconds": 22.13
+    },
+    {
+      "run": 7,
+      "worker_killed": "worker-1",
+      "job_id": "38d910e9-3049-4d32-8409-1b09122913c8",
+      "status": "skipped",
+      "reason": "job routed to worker-2 instead of worker-1"
+    },
+    {
+      "run": 8,
+      "worker_killed": "worker-2",
+      "job_id": "ef48a8c6-24d0-4e06-846b-c4359ff9dbbc",
+      "status": "skipped",
+      "reason": "job routed to worker-3 instead of worker-2"
+    },
+    {
+      "run": 9,
+      "worker_killed": "worker-3",
+      "job_id": "d25303af-9034-48da-9be0-6fc94e3124e0",
+      "status": "skipped",
+      "reason": "job routed to worker-2 instead of worker-3"
+    },
+    {
+      "run": 10,
+      "worker_killed": "worker-1",
+      "job_id": "6cce95de-0c43-4a18-b52c-551f574211a1",
+      "status": "skipped",
+      "reason": "job routed to worker-3 instead of worker-1"
+    },
+    {
+      "run": 11,
+      "worker_killed": "worker-2",
+      "job_id": "3367ce04-d425-43a8-bb0d-537cf8dee5ad",
+      "status": "skipped",
+      "reason": "job routed to worker-3 instead of worker-2"
+    },
+    {
+      "run": 12,
+      "worker_killed": "worker-3",
+      "job_id": "2ae3d29c-a25c-414d-a059-b940fd79a548",
+      "status": "skipped",
+      "reason": "job routed to worker-2 instead of worker-3"
+    },
+    {
+      "run": 13,
+      "worker_killed": "worker-1",
+      "job_id": "a6fb3366-9d5d-4cfe-9ef9-f4dc556f33b4",
+      "status": "passed",
+      "reassigned_to": "worker-3",
+      "reassignment_latency_seconds": 22.08
+    },
+    {
+      "run": 14,
+      "worker_killed": "worker-2",
+      "job_id": "0c5fad28-7034-443a-9d4a-a600dcc6b418",
+      "status": "skipped",
+      "reason": "job routed to worker-3 instead of worker-2"
+    },
+    {
+      "run": 15,
+      "worker_killed": "worker-3",
+      "job_id": "4faa9d0d-ee4d-46e7-8374-74e915777ff2",
+      "status": "passed",
+      "reassigned_to": "worker-2",
+      "reassignment_latency_seconds": 21.01
+    },
+    {
+      "run": 16,
+      "worker_killed": "worker-1",
+      "job_id": "528576c9-04e7-4493-a4aa-b9ed79af7f26",
+      "status": "passed",
+      "reassigned_to": "worker-2",
+      "reassignment_latency_seconds": 22.05
+    },
+    {
+      "run": 17,
+      "worker_killed": "worker-2",
+      "job_id": "561fb7fa-fa1b-4538-bd1b-63a1854bb7b3",
+      "status": "passed",
+      "reassigned_to": "worker-3",
+      "reassignment_latency_seconds": 22.07
+    },
+    {
+      "run": 18,
+      "worker_killed": "worker-3",
+      "job_id": "f23b19f6-cd1f-4986-9214-d0262a131569",
+      "status": "passed",
+      "reassigned_to": "worker-1",
+      "reassignment_latency_seconds": 22.07
+    },
+    {
+      "run": 19,
+      "worker_killed": "worker-1",
+      "job_id": "4f6eeb26-fc40-47f0-8f79-608fa556e2f8",
+      "status": "passed",
+      "reassigned_to": "worker-2",
+      "reassignment_latency_seconds": 21.08
+    },
+    {
+      "run": 20,
+      "worker_killed": "worker-2",
+      "job_id": "42c29984-d613-4a3a-8815-cbd74c791afa",
+      "status": "skipped",
+      "reason": "job routed to worker-3 instead of worker-2"
+    },
+    {
+      "run": 21,
+      "worker_killed": "worker-3",
+      "job_id": "704bffbb-9d31-4e90-bbfd-4696314cc475",
+      "status": "passed",
+      "reassigned_to": "worker-1",
+      "reassignment_latency_seconds": 22.14
+    },
+    {
+      "run": 22,
+      "worker_killed": "worker-1",
+      "job_id": "f05b56cc-2c6d-44dc-83f3-56848ec75639",
+      "status": "skipped",
+      "reason": "job routed to worker-3 instead of worker-1"
+    },
+    {
+      "run": 23,
+      "worker_killed": "worker-2",
+      "job_id": "469413eb-54f4-4ce5-9994-5fd96cabdcfb",
+      "status": "skipped",
+      "reason": "job routed to worker-3 instead of worker-2"
+    },
+    {
+      "run": 24,
+      "worker_killed": "worker-3",
+      "job_id": "17c1a76d-6e27-4745-8f5f-650246f03e27",
+      "status": "skipped",
+      "reason": "job routed to worker-1 instead of worker-3"
+    },
+    {
+      "run": 25,
+      "worker_killed": "worker-1",
+      "job_id": "27dd3c70-e677-4a4c-8773-21c2307f24dd",
+      "status": "skipped",
+      "reason": "job routed to worker-3 instead of worker-1"
+    },
+    {
+      "run": 26,
+      "worker_killed": "worker-2",
+      "job_id": "c9e331a3-e98a-45dc-8d20-45ffcc8fc965",
+      "status": "skipped",
+      "reason": "job routed to worker-3 instead of worker-2"
+    },
+    {
+      "run": 27,
+      "worker_killed": "worker-3",
+      "job_id": "8e3b74e5-fd81-464e-bf23-99f7071db01e",
+      "status": "skipped",
+      "reason": "job routed to worker-1 instead of worker-3"
+    },
+    {
+      "run": 28,
+      "worker_killed": "worker-1",
+      "job_id": "4dbf896d-f8ce-410a-8ccc-d0b796d5c78a",
+      "status": "skipped",
+      "reason": "job routed to worker-3 instead of worker-1"
+    },
+    {
+      "run": 29,
+      "worker_killed": "worker-2",
+      "job_id": "f8b0b372-4d71-468f-b9dd-ed0c6c05250f",
+      "status": "skipped",
+      "reason": "job routed to worker-1 instead of worker-2"
+    },
+    {
+      "run": 30,
+      "worker_killed": "worker-3",
+      "job_id": "928dc779-d17b-4d31-99f2-782c2ac6eb59",
+      "status": "passed",
+      "reassigned_to": "worker-2",
+      "reassignment_latency_seconds": 22.04
+    },
+    {
+      "run": 31,
+      "worker_killed": "worker-1",
+      "job_id": "d74483ef-084a-4e7c-845a-6a46404257f5",
+      "status": "passed",
+      "reassigned_to": "worker-2",
+      "reassignment_latency_seconds": 20.97
+    },
+    {
+      "run": 32,
+      "worker_killed": "worker-2",
+      "job_id": "49636c22-fabe-45fb-8a3d-15cc7c391900",
+      "status": "passed",
+      "reassigned_to": "worker-1",
+      "reassignment_latency_seconds": 22.06
+    },
+    {
+      "run": 33,
+      "worker_killed": "worker-3",
+      "job_id": "0b255ea9-8bf1-4a66-9123-e767e7185beb",
+      "status": "skipped",
+      "reason": "job routed to worker-2 instead of worker-3"
+    },
+    {
+      "run": 34,
+      "worker_killed": "worker-1",
+      "job_id": "673e7efd-e657-4aaf-ac95-aa1ee1c63afd",
+      "status": "skipped",
+      "reason": "job routed to worker-2 instead of worker-1"
+    },
+    {
+      "run": 35,
+      "worker_killed": "worker-2",
+      "job_id": "49506034-b14a-4478-baa9-0031ac7af3ae",
+      "status": "skipped",
+      "reason": "job routed to worker-3 instead of worker-2"
+    },
+    {
+      "run": 36,
+      "worker_killed": "worker-3",
+      "job_id": "5e97981d-a6c7-4bc3-9891-f5c6678a591e",
+      "status": "skipped",
+      "reason": "job routed to worker-1 instead of worker-3"
+    },
+    {
+      "run": 37,
+      "worker_killed": "worker-1",
+      "job_id": "85ca3ad7-c540-479e-92db-e9bc8f605fb2",
+      "status": "skipped",
+      "reason": "job routed to worker-3 instead of worker-1"
+    },
+    {
+      "run": 38,
+      "worker_killed": "worker-2",
+      "job_id": "6e31ab7b-9283-4f37-bd29-69f04617c460",
+      "status": "passed",
+      "reassigned_to": "worker-3",
+      "reassignment_latency_seconds": 22.16
+    },
+    {
+      "run": 39,
+      "worker_killed": "worker-3",
+      "job_id": "44398801-c5e2-4ee4-a6d0-c015a84f494e",
+      "status": "skipped",
+      "reason": "job routed to worker-2 instead of worker-3"
+    },
+    {
+      "run": 40,
+      "worker_killed": "worker-1",
+      "job_id": "3b188ad2-34d7-44f4-9f7a-3e5a16380c1e",
+      "status": "passed",
+      "reassigned_to": "worker-2",
+      "reassignment_latency_seconds": 20.99
+    },
+    {
+      "run": 41,
+      "worker_killed": "worker-2",
+      "job_id": "e7433d0e-251e-4268-8373-b7b0517d7874",
+      "status": "skipped",
+      "reason": "job routed to worker-3 instead of worker-2"
+    },
+    {
+      "run": 42,
+      "worker_killed": "worker-3",
+      "job_id": "605c9c5d-3c9b-40c2-a8ed-602fa8b90ea6",
+      "status": "skipped",
+      "reason": "job routed to worker-2 instead of worker-3"
+    },
+    {
+      "run": 43,
+      "worker_killed": "worker-1",
+      "job_id": "d06fdac1-06fd-42e9-a23c-f0f203101f6c",
+      "status": "skipped",
+      "reason": "job routed to worker-2 instead of worker-1"
+    },
+    {
+      "run": 44,
+      "worker_killed": "worker-2",
+      "job_id": "92a29d16-971a-468c-a1d1-e3cf9550f4af",
+      "status": "passed",
+      "reassigned_to": "worker-3",
+      "reassignment_latency_seconds": 22.02
+    },
+    {
+      "run": 45,
+      "worker_killed": "worker-3",
+      "job_id": "f0c0746b-9d95-4a54-a399-a202d65f4e22",
+      "status": "passed",
+      "reassigned_to": "worker-1",
+      "reassignment_latency_seconds": 22.03
+    },
+    {
+      "run": 46,
+      "worker_killed": "worker-1",
+      "job_id": "aad84763-b881-4684-9a72-5d650894d402",
+      "status": "skipped",
+      "reason": "job routed to worker-3 instead of worker-1"
+    },
+    {
+      "run": 47,
+      "worker_killed": "worker-2",
+      "job_id": "1fbef974-3e18-4efb-ac66-5062a3ce3b54",
+      "status": "passed",
+      "reassigned_to": "worker-1",
+      "reassignment_latency_seconds": 22.06
+    },
+    {
+      "run": 48,
+      "worker_killed": "worker-3",
+      "job_id": "a015a75a-cea4-4db1-8813-0a0e9bbc6a8b",
+      "status": "skipped",
+      "reason": "job routed to worker-2 instead of worker-3"
+    },
+    {
+      "run": 49,
+      "worker_killed": "worker-1",
+      "job_id": "0edb81bc-aa94-4f8b-a90d-cafea0ea608e",
+      "status": "skipped",
+      "reason": "job routed to worker-2 instead of worker-1"
+    },
+    {
+      "run": 50,
+      "worker_killed": "worker-2",
+      "job_id": "6960ea76-a999-4a3b-9151-92ed3936791d",
+      "status": "passed",
+      "reassigned_to": "worker-1",
+      "reassignment_latency_seconds": 21.06
+    }
+  ]
+}
