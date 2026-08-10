@@ -8,6 +8,12 @@ from proto import scheduler_pb2, scheduler_pb2_grpc
 from coordinator.hash_ring import ConsistentHashRing
 from coordinator import database as db
 
+# How long we'll wait for a worker to acknowledge AssignJob before giving up
+# on it. Without this, a slow or half-dead worker (marked healthy but not
+# actually responding) can hang the gRPC call indefinitely, blocking whatever
+# called route() — see issue #5.
+ASSIGN_JOB_TIMEOUT_SECONDS = 5
+
 
 class JobRouter:
     def __init__(self, ring: ConsistentHashRing):
@@ -36,7 +42,8 @@ class JobRouter:
         with grpc.insecure_channel(address) as channel:
             stub = scheduler_pb2_grpc.WorkerServiceStub(channel)
             response = stub.AssignJob(
-                scheduler_pb2.JobRequest(job_id=job_id, command=command)
+                scheduler_pb2.JobRequest(job_id=job_id, command=command),
+                timeout=ASSIGN_JOB_TIMEOUT_SECONDS,
             )
 
         # Update job state in DB
