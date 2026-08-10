@@ -1,4 +1,7 @@
 # gRPC server, registers with coordinator
+#
+# Heartbeat sends run on a dedicated single-thread executor so a slow or
+# unreachable coordinator can't skew the 5s ping cadence — see issue #2.
 
 import grpc
 import sys
