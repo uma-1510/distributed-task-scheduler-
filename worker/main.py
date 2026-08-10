@@ -46,11 +46,23 @@ class WorkerService(scheduler_pb2_grpc.WorkerServiceServicer):
 # takes to respond. See issue #2.
 heartbeat_executor = futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="heartbeat-sender")
 
+# Now that a slow send can't delay the next one, there's no reason to keep
+# the old tight 3s request timeout — give the coordinator more room before
+# giving up on a single ping.
+HEARTBEAT_SEND_TIMEOUT_SECONDS = 10
+
+# If pings are backing up in the executor's queue faster than they're being
+# sent, that's a real signal the coordinator's been unreachable for a while
+# — worth a log even though nothing here can act on it directly (the
+# heartbeat monitor on the coordinator side is what actually decides this
+# worker is dead).
+HEARTBEAT_QUEUE_WARNING_THRESHOLD = 5
+
 
 def _send_one_heartbeat(worker_id: str):
     url = f"http://{COORDINATOR_HOST}:{COORDINATOR_PORT}/workers/{worker_id}/heartbeat"
     try:
-        requests.post(url, timeout=3)
+        requests.post(url, timeout=HEARTBEAT_SEND_TIMEOUT_SECONDS)
         print(f"[heartbeat] ping sent — {worker_id}")
     except Exception as e:
         print(f"[heartbeat] failed to reach coordinator: {e}")
@@ -58,6 +70,9 @@ def _send_one_heartbeat(worker_id: str):
 
 def send_heartbeats(worker_id: str):
     while True:
+        queue_depth = heartbeat_executor._work_queue.qsize()
+        if queue_depth > HEARTBEAT_QUEUE_WARNING_THRESHOLD:
+            print(f"[heartbeat] ⚠️  {queue_depth} pings backed up — coordinator may be unreachable")
         heartbeat_executor.submit(_send_one_heartbeat, worker_id)
         time.sleep(HEARTBEAT_INTERVAL)
 
