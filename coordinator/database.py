@@ -102,6 +102,22 @@ def update_worker_status(worker_id: str, status: WorkerStatus):
     conn.close()
 
 
+def update_workers_status_batch(worker_ids: list[str], status: WorkerStatus):
+    """Mark multiple workers' status in a single UPDATE instead of one
+    round-trip per worker — see issue #6. No-op on an empty list so callers
+    don't need to guard against it."""
+    if not worker_ids:
+        return
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE workers SET status = %s WHERE worker_id = ANY(%s);",
+        (status.value, worker_ids)
+    )
+    cur.close()
+    conn.close()
+
+
 def get_all_workers() -> list[dict]:
     conn = get_connection()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
