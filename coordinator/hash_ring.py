@@ -1,6 +1,6 @@
 # Consistent hashing implementation
 
-import hashlib
+import xxhash
 from sortedcontainers import SortedDict
 from typing import Dict, Optional, List
 
@@ -26,8 +26,11 @@ class ConsistentHashRing:
 
     # Internal Hash Function
     def _hash(self, key: str) -> int:
-        """Returns a deterministic hash in MD5 space."""
-        return int(hashlib.md5(key.encode("utf-8")).hexdigest(), 16)
+        """Returns a deterministic hash. Uses xxHash (xxh64) instead of MD5
+        — MD5 is cryptographically overkill for ring placement, where all
+        that's needed is a fast, well-distributed non-cryptographic hash.
+        See issue #11."""
+        return xxhash.xxh64(key.encode("utf-8")).intdigest()
 
     # Worker Management
     def add_worker(self, worker_id: str, metadata: Optional[dict] = None):
