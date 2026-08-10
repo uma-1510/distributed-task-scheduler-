@@ -14,6 +14,14 @@ from coordinator import database as db
 # called route() — see issue #5.
 ASSIGN_JOB_TIMEOUT_SECONDS = 5
 
+# gRPC codes that mean "this worker isn't actually reachable right now" —
+# worth pulling it out of the ring immediately rather than waiting for the
+# heartbeat monitor's next cycle. DEADLINE_EXCEEDED is a hung call;
+# UNAVAILABLE is an immediate connection-refused, e.g. right after
+# `docker compose stop <worker>` closes the port before the container is
+# fully gone.
+UNREACHABLE_WORKER_CODES = {grpc.StatusCode.DEADLINE_EXCEEDED, grpc.StatusCode.UNAVAILABLE}
+
 
 class JobRouter:
     def __init__(self, ring: ConsistentHashRing):
@@ -47,16 +55,17 @@ class JobRouter:
                     timeout=ASSIGN_JOB_TIMEOUT_SECONDS,
                 )
         except grpc.RpcError as e:
-            if e.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
+            code = e.code()
+            if code in UNREACHABLE_WORKER_CODES:
                 # This worker isn't responding even though the heartbeat
                 # monitor hasn't marked it DEAD yet (still within its grace
                 # window). Pull it out of the ring immediately so the next
                 # route() call doesn't pick it again — the heartbeat monitor
                 # will catch up and mark it DEAD/reassign its other jobs on
                 # its own schedule.
-                print(f"[router] ⏱️  {worker_id} timed out after {ASSIGN_JOB_TIMEOUT_SECONDS}s — removing from ring")
+                print(f"[router] ⏱️  {worker_id} unreachable ({code.name}) — removing from ring")
                 self.ring.remove_worker(worker_id)
-                raise RuntimeError(f"Worker {worker_id} timed out on AssignJob") from e
+                raise RuntimeError(f"Worker {worker_id} unreachable ({code.name})") from e
             raise RuntimeError(f"Worker {worker_id} gRPC call failed: {e.details()}") from e
 
         # Update job state in DB
