@@ -1,5 +1,13 @@
 FROM python:3.12-slim
 
+# Without this, Python fully buffers stdout when it's not a TTY (i.e.
+# always, in a container), so `print()` calls — including every
+# [heartbeat]/[worker]/[executor] log line — never reach `docker compose
+# logs` in anything close to real time. Noticed while trying to verify
+# issue #2's heartbeat-timing fix against a live container and finding the
+# worker's logs were completely empty.
+ENV PYTHONUNBUFFERED=1
+
 WORKDIR /app
 
 COPY requirements.txt .
