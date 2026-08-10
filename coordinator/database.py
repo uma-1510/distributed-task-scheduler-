@@ -1,3 +1,10 @@
+"""PostgreSQL access layer for the coordinator.
+
+All queries go through the module-level connection pool via get_conn()
+(see issue #3) instead of opening/closing a raw connection per call. Pool
+size is tuned with DB_POOL_MIN_CONN / DB_POOL_MAX_CONN in common/config.py.
+"""
+
 from contextlib import contextmanager
 
 import psycopg2
