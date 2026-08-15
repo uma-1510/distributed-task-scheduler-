@@ -69,23 +69,42 @@ HEARTBEAT_QUEUE_WARNING_THRESHOLD = 5
 # coordinator comes back matters more than N stale ones queued behind it.
 HEARTBEAT_QUEUE_MAX_DEPTH = 100
 
+# Review feedback on #38: the original version read
+# heartbeat_executor._work_queue.qsize() — a private ThreadPoolExecutor
+# attribute, and stale-by-the-time-you-act-on-it since the pool's own
+# worker thread dequeues concurrently. Tracking our own count under a lock
+# instead means the depth check and the decision to submit happen
+# atomically, and we're not reaching into executor internals at all.
+_heartbeat_backlog_lock  = threading.Lock()
+_heartbeat_backlog_count = 0
+
 
 def _send_one_heartbeat(worker_id: str):
+    global _heartbeat_backlog_count
     url = f"http://{COORDINATOR_HOST}:{COORDINATOR_PORT}/workers/{worker_id}/heartbeat"
     try:
         requests.post(url, timeout=HEARTBEAT_SEND_TIMEOUT_SECONDS)
         print(f"[heartbeat] ping sent — {worker_id}")
     except Exception as e:
         print(f"[heartbeat] failed to reach coordinator: {e}")
+    finally:
+        with _heartbeat_backlog_lock:
+            _heartbeat_backlog_count -= 1
 
 
 def send_heartbeats(worker_id: str):
+    global _heartbeat_backlog_count
     while True:
-        queue_depth = heartbeat_executor._work_queue.qsize()
-        if queue_depth > HEARTBEAT_QUEUE_WARNING_THRESHOLD:
-            print(f"[heartbeat] ⚠️  {queue_depth} pings backed up — coordinator may be unreachable")
+        with _heartbeat_backlog_lock:
+            queue_depth = _heartbeat_backlog_count
+            if queue_depth > HEARTBEAT_QUEUE_WARNING_THRESHOLD:
+                print(f"[heartbeat] ⚠️  {queue_depth} pings backed up — coordinator may be unreachable")
 
-        if queue_depth < HEARTBEAT_QUEUE_MAX_DEPTH:
+            should_submit = queue_depth < HEARTBEAT_QUEUE_MAX_DEPTH
+            if should_submit:
+                _heartbeat_backlog_count += 1
+
+        if should_submit:
             heartbeat_executor.submit(_send_one_heartbeat, worker_id)
         else:
             print(f"[heartbeat] queue at max depth ({HEARTBEAT_QUEUE_MAX_DEPTH}) — skipping this ping")
