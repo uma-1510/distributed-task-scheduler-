@@ -1,6 +1,28 @@
 # Consistent hashing implementation
+#
+# _hash() uses xxHash (64-bit output) rather than MD5 (128-bit) — see issue
+# #11. Trades hash space (2^64 vs 2^128) for speed; 2^64 is still far more
+# than enough to avoid meaningful collision risk at any vnode count this
+# system would realistically run (150 vnodes/worker × dozens of workers is
+# nowhere near where a 64-bit space's birthday bound would start to matter).
+#
+# Upgrade hazard, flagged in review on #39: changing _hash()'s algorithm
+# changes every worker's vnode positions deterministically, which changes
+# which worker a given job_id maps to. Two things this means in practice:
+#   1. The ring is already fully rebuilt from scratch on every coordinator
+#      restart (see database.py / the "ring lost on restart" fix in the
+#      README) — so deploying this swap and restarting causes one clean
+#      transition to the new placement scheme, not an ongoing problem.
+#      In-flight jobs are unaffected (assigned_to is already set; only new
+#      routing decisions use the new positions).
+#   2. This only stays safe as long as there's exactly one coordinator
+#      computing placements. If this coordinator is ever horizontally
+#      scaled to multiple replicas, every replica MUST run the same hash
+#      function/version — a mixed MD5/xxHash fleet during a rolling
+#      upgrade would have replicas disagreeing on where a given job_id
+#      belongs. Worth revisiting if/when that happens.
 
-import hashlib
+import xxhash
 from sortedcontainers import SortedDict
 from typing import Dict, Optional, List
 
@@ -26,8 +48,11 @@ class ConsistentHashRing:
 
     # Internal Hash Function
     def _hash(self, key: str) -> int:
-        """Returns a deterministic hash in MD5 space."""
-        return int(hashlib.md5(key.encode("utf-8")).hexdigest(), 16)
+        """Returns a deterministic hash. Uses xxHash (xxh64) instead of MD5
+        — MD5 is cryptographically overkill for ring placement, where all
+        that's needed is a fast, well-distributed non-cryptographic hash.
+        See issue #11."""
+        return xxhash.xxh64(key.encode("utf-8")).intdigest()
 
     # Worker Management
     def add_worker(self, worker_id: str, metadata: Optional[dict] = None):

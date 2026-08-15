@@ -9,3 +9,4 @@ sqlalchemy
 python-dotenv
 pytest
 requests
+xxhash>=3.2.0
