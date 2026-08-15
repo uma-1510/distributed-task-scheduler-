@@ -5,6 +5,22 @@
 # than enough to avoid meaningful collision risk at any vnode count this
 # system would realistically run (150 vnodes/worker × dozens of workers is
 # nowhere near where a 64-bit space's birthday bound would start to matter).
+#
+# Upgrade hazard, flagged in review on #39: changing _hash()'s algorithm
+# changes every worker's vnode positions deterministically, which changes
+# which worker a given job_id maps to. Two things this means in practice:
+#   1. The ring is already fully rebuilt from scratch on every coordinator
+#      restart (see database.py / the "ring lost on restart" fix in the
+#      README) — so deploying this swap and restarting causes one clean
+#      transition to the new placement scheme, not an ongoing problem.
+#      In-flight jobs are unaffected (assigned_to is already set; only new
+#      routing decisions use the new positions).
+#   2. This only stays safe as long as there's exactly one coordinator
+#      computing placements. If this coordinator is ever horizontally
+#      scaled to multiple replicas, every replica MUST run the same hash
+#      function/version — a mixed MD5/xxHash fleet during a rolling
+#      upgrade would have replicas disagreeing on where a given job_id
+#      belongs. Worth revisiting if/when that happens.
 
 import xxhash
 from sortedcontainers import SortedDict
