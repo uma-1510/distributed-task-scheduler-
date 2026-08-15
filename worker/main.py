@@ -1,4 +1,7 @@
 # gRPC server, registers with coordinator
+#
+# Heartbeat sends run on a dedicated single-thread executor so a slow or
+# unreachable coordinator can't skew the 5s ping cadence — see issue #2.
 
 import grpc
 import sys
@@ -36,14 +39,76 @@ class WorkerService(scheduler_pb2_grpc.WorkerServiceServicer):
         return scheduler_pb2.HeartbeatResponse(acknowledged=True)
 
 
-def send_heartbeats(worker_id: str):
+# Sending each heartbeat used to block send_heartbeats()'s own loop thread
+# on requests.post() — if the coordinator was slow, the *next* heartbeat
+# would fire late too, since time.sleep(HEARTBEAT_INTERVAL) only ran after
+# the blocking call returned. A worker could get marked DEAD purely because
+# the coordinator was busy, not because the worker itself was unhealthy.
+# Sending on a dedicated one-thread executor instead means the loop always
+# sleeps exactly HEARTBEAT_INTERVAL regardless of how long the coordinator
+# takes to respond. See issue #2.
+heartbeat_executor = futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="heartbeat-sender")
+
+# Now that a slow send can't delay the next one, there's no reason to keep
+# the old tight 3s request timeout — give the coordinator more room before
+# giving up on a single ping.
+HEARTBEAT_SEND_TIMEOUT_SECONDS = 10
+
+# If pings are backing up in the executor's queue faster than they're being
+# sent, that's a real signal the coordinator's been unreachable for a while
+# — worth a log even though nothing here can act on it directly (the
+# heartbeat monitor on the coordinator side is what actually decides this
+# worker is dead).
+HEARTBEAT_QUEUE_WARNING_THRESHOLD = 5
+
+# Hard cap on how many pings can queue up. Without this, a coordinator
+# that's unreachable for hours/days would mean this worker submits one new
+# task every 5s forever, growing the queue without bound. Once we're at the
+# cap, skip submitting new pings until the backlog drains — the queued ones
+# will still fire in order, just later, and one fresh ping the moment the
+# coordinator comes back matters more than N stale ones queued behind it.
+HEARTBEAT_QUEUE_MAX_DEPTH = 100
+
+# Review feedback on #38: the original version read
+# heartbeat_executor._work_queue.qsize() — a private ThreadPoolExecutor
+# attribute, and stale-by-the-time-you-act-on-it since the pool's own
+# worker thread dequeues concurrently. Tracking our own count under a lock
+# instead means the depth check and the decision to submit happen
+# atomically, and we're not reaching into executor internals at all.
+_heartbeat_backlog_lock  = threading.Lock()
+_heartbeat_backlog_count = 0
+
+
+def _send_one_heartbeat(worker_id: str):
+    global _heartbeat_backlog_count
     url = f"http://{COORDINATOR_HOST}:{COORDINATOR_PORT}/workers/{worker_id}/heartbeat"
+    try:
+        requests.post(url, timeout=HEARTBEAT_SEND_TIMEOUT_SECONDS)
+        print(f"[heartbeat] ping sent — {worker_id}")
+    except Exception as e:
+        print(f"[heartbeat] failed to reach coordinator: {e}")
+    finally:
+        with _heartbeat_backlog_lock:
+            _heartbeat_backlog_count -= 1
+
+
+def send_heartbeats(worker_id: str):
+    global _heartbeat_backlog_count
     while True:
-        try:
-            requests.post(url, timeout=3)
-            print(f"[heartbeat] ping sent — {worker_id}")
-        except Exception as e:
-            print(f"[heartbeat] failed to reach coordinator: {e}")
+        with _heartbeat_backlog_lock:
+            queue_depth = _heartbeat_backlog_count
+            if queue_depth > HEARTBEAT_QUEUE_WARNING_THRESHOLD:
+                print(f"[heartbeat] ⚠️  {queue_depth} pings backed up — coordinator may be unreachable")
+
+            should_submit = queue_depth < HEARTBEAT_QUEUE_MAX_DEPTH
+            if should_submit:
+                _heartbeat_backlog_count += 1
+
+        if should_submit:
+            heartbeat_executor.submit(_send_one_heartbeat, worker_id)
+        else:
+            print(f"[heartbeat] queue at max depth ({HEARTBEAT_QUEUE_MAX_DEPTH}) — skipping this ping")
+
         time.sleep(HEARTBEAT_INTERVAL)
 
 
