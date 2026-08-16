@@ -12,10 +12,11 @@ import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
+from datetime import datetime
 
 sys.path.insert(0, '.')
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
 
@@ -136,8 +137,17 @@ def submit_job(body: JobSubmit):
     return {"job_id": job_id, "status": "assigned", "worker_id": worker_id}
 
 @app.get("/jobs")
-def list_jobs():
-    return db.get_all_jobs()
+def list_jobs(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(200, ge=1, le=2000),
+    status: str | None = Query(None, description="filter by job status, e.g. 'failed'"),
+    since: datetime | None = Query(None, description="only jobs created at or after this time"),
+):
+    # Default limit (200) is generous relative to this demo's scale so
+    # existing manual usage (`curl :8000/jobs`) doesn't get silently
+    # truncated — callers who want everything can still page through with
+    # skip/limit, or filter down with status/since. See issue #10.
+    return db.get_jobs_filtered(skip=skip, limit=limit, status=status, since=since)
 
 @app.get("/jobs/{job_id}")
 def get_job(job_id: str):
@@ -160,8 +170,11 @@ def heartbeat(worker_id: str):
     return {"acknowledged": True}
 
 @app.get("/workers")
-def list_workers():
-    return db.get_all_workers()
+def list_workers(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
+):
+    return db.get_workers_paginated(skip=skip, limit=limit)
 
 @app.get("/debug/ring")
 def debug_ring():
