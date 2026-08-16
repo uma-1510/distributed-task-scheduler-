@@ -60,6 +60,11 @@ def _run_docker_compose(*args, worker_name):
         )
     except FileNotFoundError as e:
         raise ChaosTestError("docker CLI not found — is Docker installed and on PATH?") from e
+    except OSError as e:
+        # Covers PermissionError and other OS-level failures starting the
+        # docker CLI that aren't FileNotFoundError — without this they'd
+        # still crash the whole script with a raw traceback.
+        raise ChaosTestError(f"failed to start docker CLI: {e}") from e
     except subprocess.TimeoutExpired as e:
         raise ChaosTestError(f"'docker compose {' '.join(args)} {worker_name}' timed out") from e
 
@@ -82,6 +87,11 @@ def run_once(run_number, total_runs, worker_to_kill, sleep_seconds):
 
     result = {"run": run_number, "worker_killed": worker_to_kill}
 
+    # Only true once kill_worker() is actually attempted — a failure before
+    # that (e.g. submit_job can't reach the coordinator) has no worker down
+    # to recover from, so the except block below shouldn't restart anything.
+    recovery_needed = False
+
     try:
         job = submit_job(f"sleep {sleep_seconds} && echo chaos_run_{run_number}")
         job_id = job["job_id"]
@@ -96,6 +106,7 @@ def run_once(run_number, total_runs, worker_to_kill, sleep_seconds):
 
         time.sleep(2)
         print(f"killing {worker_to_kill}...")
+        recovery_needed = True  # set before the call — a Docker timeout here leaves the worker state unknown
         kill_worker(worker_to_kill)
         kill_time = time.monotonic()
 
@@ -128,11 +139,14 @@ def run_once(run_number, total_runs, worker_to_kill, sleep_seconds):
     except ChaosTestError as e:
         print(f"run {run_number} FAILED: {e}")
         # Best-effort: don't leave the worker down for the next run just
-        # because this one hit an error partway through.
-        try:
-            restart_worker(worker_to_kill)
-        except ChaosTestError as restart_error:
-            print(f"  also failed to restart {worker_to_kill}: {restart_error}")
+        # because this one hit an error partway through — but only if we
+        # actually got as far as trying to kill it. A submit_job failure,
+        # for example, never touched worker_to_kill at all.
+        if recovery_needed:
+            try:
+                restart_worker(worker_to_kill)
+            except ChaosTestError as restart_error:
+                print(f"  also failed to restart {worker_to_kill}: {restart_error}")
         result["status"] = "error"
         result["reason"] = str(e)
         return result
