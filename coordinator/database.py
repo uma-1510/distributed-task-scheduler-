@@ -109,13 +109,17 @@ def update_workers_status_batch(worker_ids: list[str], status: WorkerStatus):
     if not worker_ids:
         return
     conn = get_connection()
-    cur = conn.cursor()
-    cur.execute(
-        "UPDATE workers SET status = %s WHERE worker_id = ANY(%s);",
-        (status.value, worker_ids)
-    )
-    cur.close()
-    conn.close()
+    try:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                "UPDATE workers SET status = %s WHERE worker_id = ANY(%s);",
+                (status.value, worker_ids)
+            )
+        finally:
+            cur.close()
+    finally:
+        conn.close()
 
 
 def get_all_workers() -> list[dict]:
