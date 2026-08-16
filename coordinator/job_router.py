@@ -1,4 +1,21 @@
 # Routes jobs to workers via gRPC
+#
+# Known follow-up gap (see issue #5's PR discussion): a worker removed from
+# the ring due to a timeout/UNAVAILABLE doesn't currently find its way back
+# in on its own — it only re-registers at process startup. If it was a
+# transient blip (e.g. a GC pause) rather than an actual crash, the worker
+# stays excluded from routing until it's restarted. Worth a dedicated
+# "re-add on next successful heartbeat" fix as a separate issue.
+#
+# Second known gap, partially mitigated (see route()'s except block, flagged
+# in review): on DEADLINE_EXCEEDED specifically, the worker may have already
+# received and started the job before the RPC timed out on our side. We
+# still record the job as assigned to that worker so the reassignment path
+# can recover it once the worker is confirmed dead — but AssignJob isn't
+# idempotent, so if the worker really did get the job, it could run twice
+# (once there, once wherever it's reassigned to). Full fix needs an
+# idempotent AssignJob keyed by job_id plus a reconciliation step — a bigger
+# change than this scoped mitigation; tracked as a follow-up, not done here.
 
 import grpc
 import sys
@@ -7,6 +24,20 @@ sys.path.insert(0, '.')
 from proto import scheduler_pb2, scheduler_pb2_grpc
 from coordinator.hash_ring import ConsistentHashRing
 from coordinator import database as db
+
+# How long we'll wait for a worker to acknowledge AssignJob before giving up
+# on it. Without this, a slow or half-dead worker (marked healthy but not
+# actually responding) can hang the gRPC call indefinitely, blocking whatever
+# called route() — see issue #5.
+ASSIGN_JOB_TIMEOUT_SECONDS = 5
+
+# gRPC codes that mean "this worker isn't actually reachable right now" —
+# worth pulling it out of the ring immediately rather than waiting for the
+# heartbeat monitor's next cycle. DEADLINE_EXCEEDED is a hung call;
+# UNAVAILABLE is an immediate connection-refused, e.g. right after
+# `docker compose stop <worker>` closes the port before the container is
+# fully gone.
+UNREACHABLE_WORKER_CODES = {grpc.StatusCode.DEADLINE_EXCEEDED, grpc.StatusCode.UNAVAILABLE}
 
 
 class JobRouter:
@@ -33,11 +64,43 @@ class JobRouter:
         print(f"[router] routing job {job_id} → {worker_id} at {address}")
 
         # Open gRPC channel and assign job
-        with grpc.insecure_channel(address) as channel:
-            stub = scheduler_pb2_grpc.WorkerServiceStub(channel)
-            response = stub.AssignJob(
-                scheduler_pb2.JobRequest(job_id=job_id, command=command)
-            )
+        try:
+            with grpc.insecure_channel(address) as channel:
+                stub = scheduler_pb2_grpc.WorkerServiceStub(channel)
+                response = stub.AssignJob(
+                    scheduler_pb2.JobRequest(job_id=job_id, command=command),
+                    timeout=ASSIGN_JOB_TIMEOUT_SECONDS,
+                )
+        except grpc.RpcError as e:
+            code = e.code()
+            if code in UNREACHABLE_WORKER_CODES:
+                # This worker isn't responding even though the heartbeat
+                # monitor hasn't marked it DEAD yet (still within its grace
+                # window). Pull it out of the ring immediately so the next
+                # route() call doesn't pick it again — the heartbeat monitor
+                # will catch up and mark it DEAD/reassign its other jobs on
+                # its own schedule.
+                print(f"[router] ⏱️  {worker_id} unreachable ({code.name}) — removing from ring")
+                self.ring.remove_worker(worker_id)
+
+                # Scoped mitigation for a gap flagged in review (not the full
+                # fix — see note below): without this, the job's DB row stays
+                # 'pending' forever. Nothing anywhere re-scans pending jobs,
+                # so it would be silently lost even once this worker is
+                # confirmed DEAD — the reassigner only looks at jobs whose
+                # assigned_to matches the dead worker and status is
+                # 'assigned'/'running'. Recording it as assigned here (even
+                # though the RPC didn't confirm the worker got it) means the
+                # existing reassignment path picks it up once the heartbeat
+                # monitor marks this worker dead, instead of it vanishing.
+                # Best-effort: a DB failure here shouldn't mask the real error.
+                try:
+                    db.update_job_assigned(job_id, worker_id)
+                except Exception as db_error:
+                    print(f"[router]   also failed to record assignment for recovery: {db_error}")
+
+                raise RuntimeError(f"Worker {worker_id} unreachable ({code.name})") from e
+            raise RuntimeError(f"Worker {worker_id} gRPC call failed: {e.details()}") from e
 
         # Update job state in DB
         db.update_job_assigned(job_id, worker_id)
