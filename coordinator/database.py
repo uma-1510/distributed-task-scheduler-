@@ -277,3 +277,23 @@ def mark_job_pending(job_id: str):
             (job_id,)
         )
         cur.close()
+
+
+def mark_jobs_pending_batch(job_ids: list[str]):
+    """Same as mark_job_pending, but for a whole batch in a single UPDATE —
+    used when reassigning every job a dead worker was holding at once
+    instead of one round-trip per job. See issue #7. No-op on empty list."""
+    if not job_ids:
+        return
+    with get_conn() as conn:
+        cur = conn.cursor()
+        # job_id is a UUID column; psycopg2 adapts a Python list of str to a
+        # text[] literal, and Postgres won't implicitly compare that against
+        # uuid — needs an explicit cast, or this fails at runtime with
+        # "operator does not exist: uuid = text" (caught via live testing
+        # on this exact bug the first time this function was written).
+        cur.execute(
+            "UPDATE jobs SET status = 'pending', assigned_to = NULL, started_at = NULL WHERE job_id = ANY(%s::uuid[]);",
+            (job_ids,)
+        )
+        cur.close()
