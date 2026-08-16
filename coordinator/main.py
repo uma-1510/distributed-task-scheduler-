@@ -6,6 +6,7 @@ the existing synchronous {job_id, status, worker_id} response contract that
 chaos_test.py and tests/test_failure.py rely on.
 """
 
+import os
 import sys
 import threading
 import time
@@ -17,6 +18,7 @@ from datetime import datetime
 sys.path.insert(0, '.')
 
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
 
@@ -96,6 +98,19 @@ async def lifespan(app: FastAPI):
     print("[coordinator] shut down")
 
 app = FastAPI(title="Distributed Task Scheduler", lifespan=lifespan)
+
+# The dashboard (dashboard/) is a separate origin (Vite dev server on :5173,
+# or wherever it's deployed) making browser fetch() calls to this API on
+# :8000 — without CORS headers those get blocked by the browser before the
+# response even reaches the dashboard's JS. Origins configurable via env so
+# a production dashboard deployment isn't stuck with the dev default.
+DASHBOARD_ORIGINS = os.getenv("DASHBOARD_ORIGINS", "http://localhost:5173").split(",")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=DASHBOARD_ORIGINS,
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+)
 
 class JobSubmit(BaseModel):
     command: str
