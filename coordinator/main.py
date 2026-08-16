@@ -1,5 +1,7 @@
 import sys
+import threading
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 
@@ -38,6 +40,38 @@ routing_executor = ThreadPoolExecutor(
     max_workers=ROUTING_MAX_WORKERS, thread_name_prefix="job-routing"
 )
 
+
+class SlidingWindowRateLimiter:
+    """Simple in-memory rate limiter — no new dependency (e.g. slowapi)
+    needed for a single-process coordinator. Tracks submission timestamps
+    in a deque and evicts anything older than the window on each check.
+    Not distributed-safe (per-process only), which is fine for the current
+    single-coordinator setup; would need a shared store (Redis is already
+    in this stack) if the coordinator is ever scaled horizontally."""
+
+    def __init__(self, max_per_window: int, window_seconds: float):
+        self.max_per_window = max_per_window
+        self.window_seconds = window_seconds
+        self._timestamps = deque()
+        self._lock = threading.Lock()
+
+    def allow(self) -> bool:
+        now = time.monotonic()
+        with self._lock:
+            while self._timestamps and now - self._timestamps[0] > self.window_seconds:
+                self._timestamps.popleft()
+            if len(self._timestamps) >= self.max_per_window:
+                return False
+            self._timestamps.append(now)
+            return True
+
+
+JOB_SUBMISSION_RATE_LIMIT = 200  # submissions per window
+JOB_SUBMISSION_RATE_WINDOW_SECONDS = 1.0
+submission_limiter = SlidingWindowRateLimiter(
+    JOB_SUBMISSION_RATE_LIMIT, JOB_SUBMISSION_RATE_WINDOW_SECONDS
+)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.create_tables()
@@ -63,6 +97,12 @@ class WorkerRegister(BaseModel):
 
 @app.post("/jobs")
 def submit_job(body: JobSubmit):
+    if not submission_limiter.allow():
+        raise HTTPException(
+            status_code=429,
+            detail=f"rate limit exceeded ({JOB_SUBMISSION_RATE_LIMIT}/s) — try again shortly",
+        )
+
     queue_depth = routing_executor._work_queue.qsize()
     if queue_depth > ROUTING_QUEUE_LIMIT:
         raise HTTPException(
