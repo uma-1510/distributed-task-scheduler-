@@ -1,5 +1,18 @@
+"""FastAPI coordinator entrypoint.
+
+POST /jobs is bounded and rate-limited (routing_executor, submission_limiter
+— see issue #8) rather than fully async/queue-based, specifically to keep
+the existing synchronous {job_id, status, worker_id} response contract that
+chaos_test.py and tests/test_failure.py rely on.
+"""
+
 import sys
+import threading
 import time
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
+
 sys.path.insert(0, '.')
 
 from fastapi import FastAPI, HTTPException
@@ -19,6 +32,54 @@ router     = JobRouter(ring)
 reassigner = Reassigner(ring, router)
 monitor    = HeartbeatMonitor(ring, reassigner)
 
+# POST /jobs used to call router.route() (a blocking gRPC call) directly on
+# whatever thread FastAPI happened to hand the request — unbounded, no
+# backpressure, so a burst of submissions could exhaust FastAPI's own
+# thread pool with no signal to the client that the coordinator is
+# overloaded. Routing now goes through this dedicated, bounded executor
+# instead. See issue #8 — and the PR description for why this bounds
+# concurrency + adds backpressure rather than fully decoupling submission
+# from routing (that would drop worker_id from the synchronous response,
+# which chaos_test.py and tests/test_failure.py both depend on today).
+ROUTING_MAX_WORKERS      = 20
+ROUTING_QUEUE_LIMIT      = 200
+ROUTING_TIMEOUT_SECONDS  = 10
+routing_executor = ThreadPoolExecutor(
+    max_workers=ROUTING_MAX_WORKERS, thread_name_prefix="job-routing"
+)
+
+
+class SlidingWindowRateLimiter:
+    """Simple in-memory rate limiter — no new dependency (e.g. slowapi)
+    needed for a single-process coordinator. Tracks submission timestamps
+    in a deque and evicts anything older than the window on each check.
+    Not distributed-safe (per-process only), which is fine for the current
+    single-coordinator setup; would need a shared store (Redis is already
+    in this stack) if the coordinator is ever scaled horizontally."""
+
+    def __init__(self, max_per_window: int, window_seconds: float):
+        self.max_per_window = max_per_window
+        self.window_seconds = window_seconds
+        self._timestamps = deque()
+        self._lock = threading.Lock()
+
+    def allow(self) -> bool:
+        now = time.monotonic()
+        with self._lock:
+            while self._timestamps and now - self._timestamps[0] > self.window_seconds:
+                self._timestamps.popleft()
+            if len(self._timestamps) >= self.max_per_window:
+                return False
+            self._timestamps.append(now)
+            return True
+
+
+JOB_SUBMISSION_RATE_LIMIT = 200  # submissions per window
+JOB_SUBMISSION_RATE_WINDOW_SECONDS = 1.0
+submission_limiter = SlidingWindowRateLimiter(
+    JOB_SUBMISSION_RATE_LIMIT, JOB_SUBMISSION_RATE_WINDOW_SECONDS
+)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.create_tables()
@@ -29,6 +90,7 @@ async def lifespan(app: FastAPI):
     monitor.start()
     yield
     monitor.stop()
+    routing_executor.shutdown(wait=False)
     db.close_pool()
     print("[coordinator] shut down")
 
@@ -44,12 +106,33 @@ class WorkerRegister(BaseModel):
 
 @app.post("/jobs")
 def submit_job(body: JobSubmit):
+    if not submission_limiter.allow():
+        raise HTTPException(
+            status_code=429,
+            detail=f"rate limit exceeded ({JOB_SUBMISSION_RATE_LIMIT}/s) — try again shortly",
+        )
+
+    queue_depth = routing_executor._work_queue.qsize()
+    if queue_depth > ROUTING_QUEUE_LIMIT:
+        raise HTTPException(
+            status_code=429,
+            detail=f"coordinator overloaded (routing queue depth {queue_depth}) — try again shortly",
+        )
+
     job_id = db.create_job(body.command)
     print(f"[coordinator] job created: {job_id}")
+
+    future = routing_executor.submit(router.route, job_id, body.command)
     try:
-        worker_id = router.route(job_id, body.command)
+        worker_id = future.result(timeout=ROUTING_TIMEOUT_SECONDS)
+    except FutureTimeoutError:
+        raise HTTPException(
+            status_code=504,
+            detail=f"routing job {job_id} timed out after {ROUTING_TIMEOUT_SECONDS}s",
+        )
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
+
     return {"job_id": job_id, "status": "assigned", "worker_id": worker_id}
 
 @app.get("/jobs")
