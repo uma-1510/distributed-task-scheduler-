@@ -19,6 +19,12 @@ from common.config import COORDINATOR_HOST, COORDINATOR_PORT, HEARTBEAT_INTERVAL
 
 from worker.streamer import stream_job_output
 
+# Log a warning once the job backlog crosses this many queued (not yet
+# started) jobs — a signal the worker is falling behind, distinct from
+# WORKER_MAX_THREADS which caps concurrency, not queue depth.
+JOB_QUEUE_WARNING_THRESHOLD = 50
+
+
 class WorkerService(scheduler_pb2_grpc.WorkerServiceServicer):
 
     def __init__(self):
@@ -32,7 +38,14 @@ class WorkerService(scheduler_pb2_grpc.WorkerServiceServicer):
         )
 
     def AssignJob(self, request, context):
-        print(f"[worker] received job {request.job_id}: {request.command}")
+        # _work_queue is a private attribute of ThreadPoolExecutor, but it's
+        # the only way to see backlog depth without wiring up a separate
+        # counter — good enough for a warning log.
+        queue_depth = self._job_executor._work_queue.qsize()
+        if queue_depth > JOB_QUEUE_WARNING_THRESHOLD:
+            print(f"[worker] ⚠️  job queue depth is {queue_depth} — worker may be falling behind")
+
+        print(f"[worker] received job {request.job_id}: {request.command} (queue depth: {queue_depth})")
         self._job_executor.submit(execute_job, request.job_id, request.command)
         return scheduler_pb2.JobResponse(job_id=request.job_id, status="accepted")
 
