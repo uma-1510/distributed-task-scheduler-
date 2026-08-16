@@ -1,3 +1,11 @@
+"""FastAPI coordinator entrypoint.
+
+POST /jobs is bounded and rate-limited (routing_executor, submission_limiter
+— see issue #8) rather than fully async/queue-based, specifically to keep
+the existing synchronous {job_id, status, worker_id} response contract that
+chaos_test.py and tests/test_failure.py rely on.
+"""
+
 import sys
 import threading
 import time
