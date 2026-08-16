@@ -14,7 +14,7 @@ Docker and Docker Compose — that's it. Everything else (Python 3.12, Postgres,
 docker compose up --build
 ```
 
-Starts PostgreSQL, Redis, the coordinator (`:8000`), and 3 workers (`:50051`–`:50053`).
+Starts PostgreSQL, Redis, the coordinator (`:8000`), 3 workers (`:50051`–`:50053`), and the dashboard (`:5173`).
 
 ```bash
 # submit a job
