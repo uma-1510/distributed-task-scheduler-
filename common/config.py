@@ -21,4 +21,14 @@ WORKER_STARTUP_GRACE = 20  # seconds
 DB_POOL_MIN_CONN = int(os.getenv("DB_POOL_MIN_CONN", "2"))
 DB_POOL_MAX_CONN = int(os.getenv("DB_POOL_MAX_CONN", "20"))
 
+# Bad values here (e.g. min > max, or max <= 0) would otherwise surface as a
+# confusing PoolError deep inside psycopg2 the first time a query runs.
+# Fail fast at import time instead, with a message that says what's wrong.
+if not (0 <= DB_POOL_MIN_CONN <= DB_POOL_MAX_CONN) or DB_POOL_MAX_CONN < 1:
+    raise ValueError(
+        f"invalid DB pool bounds: DB_POOL_MIN_CONN={DB_POOL_MIN_CONN}, "
+        f"DB_POOL_MAX_CONN={DB_POOL_MAX_CONN} — require "
+        f"0 <= DB_POOL_MIN_CONN <= DB_POOL_MAX_CONN and DB_POOL_MAX_CONN >= 1"
+    )
+
 
