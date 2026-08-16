@@ -98,6 +98,9 @@ def create_tables():
             started_at    TIMESTAMP,
             completed_at  TIMESTAMP
         );
+        CREATE INDEX IF NOT EXISTS idx_jobs_created_at  ON jobs(created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_jobs_status      ON jobs(status);
+        CREATE INDEX IF NOT EXISTS idx_jobs_assigned_to ON jobs(assigned_to);
         """)
         cur.close()
     print("[db] tables ready")
