@@ -118,11 +118,16 @@ def run_once(run_number, total_runs, worker_to_kill, sleep_seconds):
 
         reassigned = False
         assigned_to = None
+        reassignment_latency_seconds = None
         for elapsed in range(REASSIGNMENT_WAIT_SECONDS):
             time.sleep(1)
             job_state = get_job(job_id)
             assigned_to = job_state["assigned_to"]
             if assigned_to and assigned_to != worker_to_kill:
+                # Capture latency right here, at actual detection time — not
+                # after restart_worker() + the 5s sleep below, which would
+                # inflate every recorded latency by ~5-7s for no reason.
+                reassignment_latency_seconds = round(time.monotonic() - kill_time, 2)
                 print(f"reassigned to {assigned_to} after {elapsed + 1}s")
                 reassigned = True
                 break
@@ -134,7 +139,7 @@ def run_once(run_number, total_runs, worker_to_kill, sleep_seconds):
         if reassigned:
             result["status"] = "passed"
             result["reassigned_to"] = assigned_to
-            result["reassignment_latency_seconds"] = round(time.monotonic() - kill_time, 2)
+            result["reassignment_latency_seconds"] = reassignment_latency_seconds
         else:
             print(f"job was NOT reassigned within {REASSIGNMENT_WAIT_SECONDS}s")
             result["status"] = "failed"
