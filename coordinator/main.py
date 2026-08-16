@@ -29,6 +29,7 @@ async def lifespan(app: FastAPI):
     monitor.start()
     yield
     monitor.stop()
+    db.close_pool()
     print("[coordinator] shut down")
 
 app = FastAPI(title="Distributed Task Scheduler", lifespan=lifespan)
