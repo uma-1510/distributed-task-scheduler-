@@ -45,8 +45,14 @@ def compute_summary(data):
 
     per_worker = {}
     for r in attempted:
+        # Group by target_worker (always present — who this run was aiming
+        # at) rather than worker_killed, which is only added once the kill
+        # actually succeeds. An "error" record from a failure before the
+        # kill step (e.g. submit_job couldn't reach the coordinator) has no
+        # worker_killed key at all, so keying on it here would KeyError.
+        worker_key = r.get("target_worker", r.get("worker_killed"))
         bucket = per_worker.setdefault(
-            r["worker_killed"], {"passed": 0, "failed": 0, "errored": 0}
+            worker_key, {"passed": 0, "failed": 0, "errored": 0}
         )
         key = "errored" if r["status"] == "error" else r["status"]
         bucket[key] += 1

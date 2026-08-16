@@ -85,7 +85,12 @@ def restart_worker(worker_name):
 def run_once(run_number, total_runs, worker_to_kill, sleep_seconds):
     print(f"\n=== Run {run_number}/{total_runs} (target: {worker_to_kill}) ===")
 
-    result = {"run": run_number, "worker_killed": worker_to_kill}
+    # "target_worker" is who we intended to kill; "worker_killed" only gets
+    # added once kill_worker() actually succeeds below. Before this fix, a
+    # skipped run's record still claimed worker_killed=target even though
+    # nothing was ever killed — every skip in the committed results looked
+    # like a kill.
+    result = {"run": run_number, "target_worker": worker_to_kill}
 
     # Only true once kill_worker() is actually attempted — a failure before
     # that (e.g. submit_job can't reach the coordinator) has no worker down
@@ -108,15 +113,21 @@ def run_once(run_number, total_runs, worker_to_kill, sleep_seconds):
         print(f"killing {worker_to_kill}...")
         recovery_needed = True  # set before the call — a Docker timeout here leaves the worker state unknown
         kill_worker(worker_to_kill)
+        result["worker_killed"] = worker_to_kill
         kill_time = time.monotonic()
 
         reassigned = False
         assigned_to = None
+        reassignment_latency_seconds = None
         for elapsed in range(REASSIGNMENT_WAIT_SECONDS):
             time.sleep(1)
             job_state = get_job(job_id)
             assigned_to = job_state["assigned_to"]
             if assigned_to and assigned_to != worker_to_kill:
+                # Capture latency right here, at actual detection time — not
+                # after restart_worker() + the 5s sleep below, which would
+                # inflate every recorded latency by ~5-7s for no reason.
+                reassignment_latency_seconds = round(time.monotonic() - kill_time, 2)
                 print(f"reassigned to {assigned_to} after {elapsed + 1}s")
                 reassigned = True
                 break
@@ -128,7 +139,7 @@ def run_once(run_number, total_runs, worker_to_kill, sleep_seconds):
         if reassigned:
             result["status"] = "passed"
             result["reassigned_to"] = assigned_to
-            result["reassignment_latency_seconds"] = round(time.monotonic() - kill_time, 2)
+            result["reassignment_latency_seconds"] = reassignment_latency_seconds
         else:
             print(f"job was NOT reassigned within {REASSIGNMENT_WAIT_SECONDS}s")
             result["status"] = "failed"
@@ -207,6 +218,7 @@ def main():
     )
 
     output_path = Path(args.output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
         json.dumps(
             {
