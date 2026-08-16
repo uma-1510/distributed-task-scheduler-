@@ -1,5 +1,12 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 from coordinator import database as db
 from coordinator.hash_ring import ConsistentHashRing
+
+# Routing N stuck jobs one at a time (each a blocking gRPC call, now up to
+# 5s per issue #5's timeout) meant a dead worker holding 100 jobs could take
+# minutes to fully reassign. Route up to this many in parallel instead.
+MAX_PARALLEL_REASSIGNMENTS = 10
 
 
 class Reassigner:
@@ -29,12 +36,18 @@ class Reassigner:
             print(f"[reassigner] no workers available — {len(job_ids)} job(s) stay pending")
             return
 
-        for job in stuck_jobs:
-            job_id  = str(job["job_id"])
-            command = job["command"]
-
-            try:
-                new_worker = self.router.route(job_id, command)
-                print(f"[reassigner] ✅ job {job_id} → {new_worker}")
-            except Exception as e:
-                print(f"[reassigner] ❌ failed to reassign job {job_id}: {e}")
+        with ThreadPoolExecutor(max_workers=MAX_PARALLEL_REASSIGNMENTS) as executor:
+            futures = {
+                executor.submit(self.router.route, str(job["job_id"]), job["command"]): str(job["job_id"])
+                for job in stuck_jobs
+            }
+            for future in as_completed(futures):
+                job_id = futures[future]
+                try:
+                    new_worker = future.result()
+                    print(f"[reassigner] ✅ job {job_id} → {new_worker}")
+                except Exception as e:
+                    # One job's routing failure (e.g. no workers left mid-
+                    # batch, or it hit another dead worker) doesn't cancel
+                    # the rest — each future is independent.
+                    print(f"[reassigner] ❌ failed to reassign job {job_id}: {e}")
