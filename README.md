@@ -77,13 +77,6 @@ python3 tests/test_worker_heartbeats.py # heartbeat decoupling
 
 Python · FastAPI · gRPC/Protobuf · PostgreSQL · Docker Compose
 
-## Status
-
-- ✅ Core scheduler, consistent hashing, failure detection + reassignment, chaos testing — working, on `main`
-- 🔍 Performance/scalability hardening (connection pooling, gRPC timeouts, backpressure, pagination, faster hashing) — implemented, [in review](https://github.com/uma-1510/distributed-task-scheduler-/pulls)
-- 🚧 React dashboard — scaffolded (`dashboard/`), not yet built out
-- ⬜ Redis — provisioned in `docker-compose.yml` for future use, not currently read or written by the app
-- ⬜ Job retry logic, worker auto-scaling, Prometheus/Grafana metrics
 
 ## Contributing
 
