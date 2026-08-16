@@ -129,6 +129,22 @@ def test_load_results_roundtrip():
     print("PASSED")
 
 
+def test_compute_summary_error_record_missing_worker_killed_key():
+    print("\n--- TEST 8: an 'error' record with no worker_killed key doesn't crash the per-worker breakdown ---")
+    # chaos_test.py only adds 'worker_killed' once kill_worker() actually
+    # succeeds — an error before that point (e.g. submit_job can't reach
+    # the coordinator) has 'target_worker' but no 'worker_killed' at all.
+    data = {
+        "results": [
+            {"run": 1, "target_worker": "worker-1", "status": "error",
+             "reason": "failed to submit job"},
+        ]
+    }
+    summary = compute_summary(data)  # would raise KeyError before this fix
+    assert summary["per_worker"]["worker-1"] == {"passed": 0, "failed": 0, "errored": 1}
+    print("PASSED")
+
+
 if __name__ == "__main__":
     test_compute_summary_basic()
     test_compute_summary_empty_results()
@@ -137,4 +153,5 @@ if __name__ == "__main__":
     test_to_markdown_contains_key_fields()
     test_to_markdown_handles_no_latency_data()
     test_load_results_roundtrip()
+    test_compute_summary_error_record_missing_worker_killed_key()
     print("\n✅ All tests passed — chaos_test_summary logic is working correctly")
