@@ -86,8 +86,49 @@ def test_dead_workers_removed_from_ring_and_reassigned_off_thread():
     print("PASSED")
 
 
+def test_stop_does_not_immediately_kill_the_executor():
+    print("\n--- TEST 4: stop() signals the loop but doesn't shut the executor down right away ---")
+    ring = MagicMock()
+    reassigner = MagicMock()
+    monitor = HeartbeatMonitor(ring, reassigner)
+
+    monitor.stop()
+
+    # Before this fix, stop() called _reassign_executor.shutdown()
+    # immediately, so ANY submit() after stop() — including one from an
+    # in-flight _check_workers() cycle that had already detected dead
+    # workers — would raise RuntimeError. Confirms that no longer happens:
+    # the executor stays usable until _monitor_loop() actually exits.
+    future = monitor._reassign_executor.submit(lambda: "still works")
+    assert future.result(timeout=2) == "still works"
+
+    monitor._reassign_executor.shutdown(wait=True)
+    print("PASSED")
+
+
+def test_executor_shuts_down_after_monitor_loop_exits():
+    print("\n--- TEST 5: the executor does eventually shut down once the loop notices _stop_event ---")
+    ring = MagicMock()
+    reassigner = MagicMock()
+    monitor = HeartbeatMonitor(ring, reassigner)
+
+    with patch("coordinator.heartbeat_monitor.db.get_all_workers", return_value=[]), \
+         patch.object(monitor, "_stop_event") as mock_event:
+        # Loop condition checks is_set(); make it True on the second call
+        # so _monitor_loop() runs one iteration then exits on its own,
+        # without a real background thread or a real 5s sleep.
+        mock_event.is_set.side_effect = [False, True]
+        with patch("coordinator.heartbeat_monitor.time.sleep"):
+            monitor._monitor_loop()
+
+    assert monitor._reassign_executor._shutdown
+    print("PASSED")
+
+
 if __name__ == "__main__":
     test_check_workers_batches_dead_worker_updates()
     test_check_workers_no_dead_workers_skips_batch_call()
     test_dead_workers_removed_from_ring_and_reassigned_off_thread()
+    test_stop_does_not_immediately_kill_the_executor()
+    test_executor_shuts_down_after_monitor_loop_exits()
     print("\n✅ All tests passed — heartbeat monitor batching/async reassignment is working correctly")

@@ -40,16 +40,25 @@ class HeartbeatMonitor:
         print("[monitor] heartbeat monitor started")
 
     def stop(self):
+        # Only signal the loop to exit here — shutting down the executor
+        # immediately would be a race. shutdown() (any wait= value) makes
+        # ALL subsequent submit() calls raise RuntimeError right away, even
+        # from an in-flight _check_workers() cycle that just detected dead
+        # workers and is about to submit their reassignments. Executor
+        # shutdown happens in _monitor_loop()'s finally block instead, so
+        # it only runs after the loop has actually exited.
         self._stop_event.set()
-        self._reassign_executor.shutdown(wait=False)
 
     def _monitor_loop(self):
-        while not self._stop_event.is_set():
-            try:
-                self._check_workers()
-            except Exception as e:
-                print(f"[monitor] error during check: {e}")
-            time.sleep(5)
+        try:
+            while not self._stop_event.is_set():
+                try:
+                    self._check_workers()
+                except Exception as e:
+                    print(f"[monitor] error during check: {e}")
+                time.sleep(5)
+        finally:
+            self._reassign_executor.shutdown(wait=False)
 
     @staticmethod
     def _strip_tz(dt):
