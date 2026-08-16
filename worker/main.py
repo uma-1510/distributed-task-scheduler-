@@ -2,8 +2,15 @@
 #
 # Heartbeat sends run on a dedicated single-thread executor so a slow or
 # unreachable coordinator can't skew the 5s ping cadence — see issue #2.
+#
+# Job execution is bounded by WORKER_MAX_THREADS via a dedicated
+# ThreadPoolExecutor on WorkerService, separate from the gRPC server's own
+# request-handling pool — see issue #9. shutdown() cancels queued-but-not-
+# started jobs AND terminates jobs that already have a live subprocess
+# (tracked via a job_id -> Popen registry), rather than only the former.
 
 import grpc
+import signal
 import sys
 import os
 import threading
@@ -15,20 +22,55 @@ sys.path.insert(0, '.')
 
 from proto import scheduler_pb2, scheduler_pb2_grpc
 from worker.executor import execute_job
-from common.config import COORDINATOR_HOST, COORDINATOR_PORT, HEARTBEAT_INTERVAL
+from common.config import COORDINATOR_HOST, COORDINATOR_PORT, HEARTBEAT_INTERVAL, WORKER_MAX_THREADS
 
 from worker.streamer import stream_job_output
 
+# Log a warning once the job backlog crosses this many queued (not yet
+# started) jobs — a signal the worker is falling behind, distinct from
+# WORKER_MAX_THREADS which caps concurrency, not queue depth.
+JOB_QUEUE_WARNING_THRESHOLD = 50
+
+
 class WorkerService(scheduler_pb2_grpc.WorkerServiceServicer):
 
-    def AssignJob(self, request, context):
-        print(f"[worker] received job {request.job_id}: {request.command}")
-        thread = threading.Thread(
-            target=execute_job,
-            args=(request.job_id, request.command),
-            daemon=True
+    def __init__(self):
+        # Bounded pool for actually *running* jobs. This is separate from
+        # the gRPC server's own ThreadPoolExecutor (which just handles
+        # incoming RPCs) — AssignJob() used to spawn a brand new raw thread
+        # per job with no cap, so N simultaneous job assignments meant N
+        # threads. See issue #9.
+        self._job_executor = futures.ThreadPoolExecutor(
+            max_workers=WORKER_MAX_THREADS, thread_name_prefix="job-exec"
         )
-        thread.start()
+        # job_id -> subprocess.Popen for jobs currently executing. Lets
+        # shutdown() actually terminate a running job's process, not just
+        # cancel queued-but-not-started futures (cancel_futures=True alone
+        # doesn't touch a job that already has a live subprocess).
+        self._running_procs_lock = threading.Lock()
+        self._running_procs = {}
+
+    def _register_proc(self, job_id, proc):
+        with self._running_procs_lock:
+            self._running_procs[job_id] = proc
+
+    def _unregister_proc(self, job_id):
+        with self._running_procs_lock:
+            self._running_procs.pop(job_id, None)
+
+    def AssignJob(self, request, context):
+        # _work_queue is a private attribute of ThreadPoolExecutor, but it's
+        # the only way to see backlog depth without wiring up a separate
+        # counter — good enough for a warning log.
+        queue_depth = self._job_executor._work_queue.qsize()
+        if queue_depth > JOB_QUEUE_WARNING_THRESHOLD:
+            print(f"[worker] ⚠️  job queue depth is {queue_depth} — worker may be falling behind")
+
+        print(f"[worker] received job {request.job_id}: {request.command} (queue depth: {queue_depth})")
+        self._job_executor.submit(
+            execute_job, request.job_id, request.command,
+            self._register_proc, self._unregister_proc,
+        )
         return scheduler_pb2.JobResponse(job_id=request.job_id, status="accepted")
 
     def StreamJobOutput(self, request, context):
@@ -37,6 +79,48 @@ class WorkerService(scheduler_pb2_grpc.WorkerServiceServicer):
 
     def Heartbeat(self, request, context):
         return scheduler_pb2.HeartbeatResponse(acknowledged=True)
+
+    def shutdown(self):
+        """Stop accepting new job submissions and terminate whatever's
+        actually mid-execution. Two separate things, on purpose:
+
+        - cancel_futures=True on the executor cancels jobs still queued
+          (submitted but not yet started) — cheap, no subprocess exists yet.
+        - Jobs that already have a live subprocess aren't touched by that at
+          all (a reviewer correctly flagged this: shutdown(wait=False) does
+          NOT stop a running proc.communicate() call). Those get an explicit
+          signal via the process registry from _register_proc().
+
+        Signaling the whole process GROUP (os.killpg), not just proc itself,
+        matters because execute_job() runs the command with shell=True —
+        proc is the /bin/sh process, and plain proc.terminate() only kills
+        that shell, not whatever it launched (e.g. `sleep 60`). Found this
+        via live testing: proc.terminate() fired correctly here, but the
+        orphaned grandchild kept the stdout pipe open, proc.communicate()
+        in execute_job() never returned, and the whole worker process ended
+        up hanging until Docker's SIGKILL instead of exiting promptly.
+        start_new_session=True on the Popen call (executor.py) is what makes
+        the process its own group leader so killpg can target the group.
+
+        Deliberately not waiting for termination to complete — docker
+        compose's stop grace period is short, and any job that doesn't die
+        promptly gets picked up by the coordinator's reassignment path once
+        the heartbeat monitor notices this worker is gone (see #34)."""
+        self._job_executor.shutdown(wait=False, cancel_futures=True)
+
+        with self._running_procs_lock:
+            procs = list(self._running_procs.items())
+
+        for job_id, proc in procs:
+            print(f"[worker] terminating in-flight job {job_id} for shutdown")
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                # Already exited (e.g. finished between the shutdown call
+                # starting and us getting to it here) — nothing to do.
+                pass
+            except Exception as e:
+                print(f"[worker]   failed to terminate {job_id}: {e}")
 
 
 # Sending each heartbeat used to block send_heartbeats()'s own loop thread
@@ -143,12 +227,32 @@ def serve(worker_id: str, port: int):
     )
     hb_thread.start()
 
+    worker_service = WorkerService()
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-    scheduler_pb2_grpc.add_WorkerServiceServicer_to_server(WorkerService(), server)
+    scheduler_pb2_grpc.add_WorkerServiceServicer_to_server(worker_service, server)
     server.add_insecure_port(f"[::]:{port}")
     server.start()
     print(f"[worker] {worker_id} listening on port {port}")
-    server.wait_for_termination()
+
+    # Without this, `docker compose stop` (SIGTERM) kills the process
+    # directly — Python's default SIGTERM handling doesn't raise a
+    # catchable exception the way SIGINT/Ctrl+C does, so the try/finally
+    # below never runs and worker_service.shutdown() never fires. Found
+    # this via live testing: a worker with a job mid-execution took the
+    # full stop grace period and got SIGKILLed instead of exiting promptly.
+    # Calling server.stop() from the handler makes wait_for_termination()
+    # return normally, so the finally block actually executes.
+    def _handle_termination(signum, frame):
+        print(f"[worker] received signal {signum}, shutting down...")
+        server.stop(grace=5)
+
+    signal.signal(signal.SIGTERM, _handle_termination)
+    signal.signal(signal.SIGINT, _handle_termination)
+
+    try:
+        server.wait_for_termination()
+    finally:
+        worker_service.shutdown()
 
 
 if __name__ == "__main__":

@@ -31,4 +31,14 @@ if not (0 <= DB_POOL_MIN_CONN <= DB_POOL_MAX_CONN) or DB_POOL_MAX_CONN < 1:
         f"0 <= DB_POOL_MIN_CONN <= DB_POOL_MAX_CONN and DB_POOL_MAX_CONN >= 1"
     )
 
+# Caps how many jobs a single worker will execute concurrently. Previously
+# unbounded — AssignJob() spawned a raw thread per job with no limit. See
+# issue #9. Tune up for I/O-bound jobs, down for CPU-bound ones.
+WORKER_MAX_THREADS = int(os.getenv("WORKER_MAX_THREADS", "10"))
+if WORKER_MAX_THREADS < 1:
+    # ThreadPoolExecutor(max_workers=0 or negative) raises ValueError anyway,
+    # but from deep inside the executor construction — fail here instead
+    # with a message that actually says what's wrong.
+    raise ValueError(f"WORKER_MAX_THREADS must be at least 1, got {WORKER_MAX_THREADS}")
+
 
