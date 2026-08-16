@@ -6,7 +6,6 @@ the existing synchronous {job_id, status, worker_id} response contract that
 chaos_test.py and tests/test_failure.py rely on.
 """
 
-import os
 import sys
 import threading
 import time
@@ -27,7 +26,7 @@ from coordinator.job_router import JobRouter
 from coordinator.heartbeat_monitor import HeartbeatMonitor
 from coordinator.reassigner import Reassigner
 from coordinator import database as db
-from common.config import VIRTUAL_NODES
+from common.config import VIRTUAL_NODES, DASHBOARD_ORIGINS
 # from coordinator import database as db
 
 ring       = ConsistentHashRing(virtual_nodes=VIRTUAL_NODES)
@@ -102,9 +101,9 @@ app = FastAPI(title="Distributed Task Scheduler", lifespan=lifespan)
 # The dashboard (dashboard/) is a separate origin (Vite dev server on :5173,
 # or wherever it's deployed) making browser fetch() calls to this API on
 # :8000 — without CORS headers those get blocked by the browser before the
-# response even reaches the dashboard's JS. Origins configurable via env so
-# a production dashboard deployment isn't stuck with the dev default.
-DASHBOARD_ORIGINS = os.getenv("DASHBOARD_ORIGINS", "http://localhost:5173").split(",")
+# response even reaches the dashboard's JS. DASHBOARD_ORIGINS is env-backed
+# (common/config.py) so a production dashboard deployment isn't stuck with
+# the dev default.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=DASHBOARD_ORIGINS,
