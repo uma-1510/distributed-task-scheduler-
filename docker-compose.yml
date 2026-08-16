@@ -45,6 +45,15 @@ services:
       redis:
         condition: service_healthy
 
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    ports:
+      - "5173:5173"
+    depends_on:
+      - coordinator
+
   worker-1:
     build:
       context: .
