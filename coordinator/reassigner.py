@@ -20,18 +20,18 @@ class Reassigner:
 
         print(f"[reassigner] reassigning {len(stuck_jobs)} jobs from {dead_worker_id}")
 
+        # Reset every stuck job to pending in one UPDATE instead of one
+        # round-trip per job — see issue #7.
+        job_ids = [str(job["job_id"]) for job in stuck_jobs]
+        db.mark_jobs_pending_batch(job_ids)
+
+        if not self.ring.get_all_workers():
+            print(f"[reassigner] no workers available — {len(job_ids)} job(s) stay pending")
+            return
+
         for job in stuck_jobs:
             job_id  = str(job["job_id"])
             command = job["command"]
-
-            # Check if any workers left in ring
-            if not self.ring.get_all_workers():
-                print(f"[reassigner] no workers available — job {job_id} stays pending")
-                db.mark_job_pending(job_id)
-                continue
-
-            # Reset job to pending so it can be reassigned
-            db.mark_job_pending(job_id)
 
             try:
                 new_worker = self.router.route(job_id, command)
