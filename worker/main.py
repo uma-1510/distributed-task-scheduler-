@@ -2,6 +2,12 @@
 #
 # Heartbeat sends run on a dedicated single-thread executor so a slow or
 # unreachable coordinator can't skew the 5s ping cadence — see issue #2.
+#
+# Job execution is bounded by WORKER_MAX_THREADS via a dedicated
+# ThreadPoolExecutor on WorkerService, separate from the gRPC server's own
+# request-handling pool — see issue #9. shutdown() cancels queued-but-not-
+# started jobs AND terminates jobs that already have a live subprocess
+# (tracked via a job_id -> Popen registry), rather than only the former.
 
 import grpc
 import sys
