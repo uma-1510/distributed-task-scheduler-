@@ -6,6 +6,16 @@
 # transient blip (e.g. a GC pause) rather than an actual crash, the worker
 # stays excluded from routing until it's restarted. Worth a dedicated
 # "re-add on next successful heartbeat" fix as a separate issue.
+#
+# Second known gap, partially mitigated (see route()'s except block, flagged
+# in review): on DEADLINE_EXCEEDED specifically, the worker may have already
+# received and started the job before the RPC timed out on our side. We
+# still record the job as assigned to that worker so the reassignment path
+# can recover it once the worker is confirmed dead — but AssignJob isn't
+# idempotent, so if the worker really did get the job, it could run twice
+# (once there, once wherever it's reassigned to). Full fix needs an
+# idempotent AssignJob keyed by job_id plus a reconciliation step — a bigger
+# change than this scoped mitigation; tracked as a follow-up, not done here.
 
 import grpc
 import sys
@@ -72,6 +82,23 @@ class JobRouter:
                 # its own schedule.
                 print(f"[router] ⏱️  {worker_id} unreachable ({code.name}) — removing from ring")
                 self.ring.remove_worker(worker_id)
+
+                # Scoped mitigation for a gap flagged in review (not the full
+                # fix — see note below): without this, the job's DB row stays
+                # 'pending' forever. Nothing anywhere re-scans pending jobs,
+                # so it would be silently lost even once this worker is
+                # confirmed DEAD — the reassigner only looks at jobs whose
+                # assigned_to matches the dead worker and status is
+                # 'assigned'/'running'. Recording it as assigned here (even
+                # though the RPC didn't confirm the worker got it) means the
+                # existing reassignment path picks it up once the heartbeat
+                # monitor marks this worker dead, instead of it vanishing.
+                # Best-effort: a DB failure here shouldn't mask the real error.
+                try:
+                    db.update_job_assigned(job_id, worker_id)
+                except Exception as db_error:
+                    print(f"[router]   also failed to record assignment for recovery: {db_error}")
+
                 raise RuntimeError(f"Worker {worker_id} unreachable ({code.name})") from e
             raise RuntimeError(f"Worker {worker_id} gRPC call failed: {e.details()}") from e
 

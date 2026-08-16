@@ -40,17 +40,23 @@ def test_deadline_exceeded_removes_worker_from_ring():
 
     with patch("coordinator.job_router.db.get_all_workers",
                return_value=[{"worker_id": "worker-1", "address": "worker-1", "port": 50051}]), \
+         patch("coordinator.job_router.db.update_job_assigned") as mock_update, \
          patch("coordinator.job_router.scheduler_pb2_grpc.WorkerServiceStub", return_value=mock_stub), \
          patch("coordinator.job_router.grpc.insecure_channel") as mock_channel:
         mock_channel.return_value.__enter__.return_value = MagicMock()
 
         try:
             router.route("job-1", "echo hi")
-            assert False, "expected RuntimeError to be raised"
+            raise AssertionError("expected RuntimeError to be raised")
         except RuntimeError as e:
             assert "unreachable" in str(e).lower()
 
     assert "worker-1" not in ring.get_all_workers(), "worker should be removed from the ring after timeout"
+    # See job_router.py's module docstring: recording the assignment here
+    # (even without RPC confirmation) is what lets the reassigner recover
+    # this job once the worker is confirmed dead, instead of it staying
+    # 'pending' forever with no retry path.
+    mock_update.assert_called_once_with("job-1", "worker-1")
     print("PASSED")
 
 
@@ -63,17 +69,43 @@ def test_unavailable_removes_worker_from_ring():
 
     with patch("coordinator.job_router.db.get_all_workers",
                return_value=[{"worker_id": "worker-1", "address": "worker-1", "port": 50051}]), \
+         patch("coordinator.job_router.db.update_job_assigned") as mock_update, \
          patch("coordinator.job_router.scheduler_pb2_grpc.WorkerServiceStub", return_value=mock_stub), \
          patch("coordinator.job_router.grpc.insecure_channel") as mock_channel:
         mock_channel.return_value.__enter__.return_value = MagicMock()
 
         try:
             router.route("job-1", "echo hi")
-            assert False, "expected RuntimeError to be raised"
+            raise AssertionError("expected RuntimeError to be raised")
         except RuntimeError:
             pass
 
     assert "worker-1" not in ring.get_all_workers()
+    mock_update.assert_called_once_with("job-1", "worker-1")
+    print("PASSED")
+
+
+def test_recovery_record_failure_does_not_mask_original_error():
+    print("\n--- TEST 5: a DB failure while recording the recovery assignment doesn't hide the real error ---")
+    router, ring = _router_with_one_worker()
+
+    mock_stub = MagicMock()
+    mock_stub.AssignJob.side_effect = _rpc_error(grpc.StatusCode.DEADLINE_EXCEEDED)
+
+    with patch("coordinator.job_router.db.get_all_workers",
+               return_value=[{"worker_id": "worker-1", "address": "worker-1", "port": 50051}]), \
+         patch("coordinator.job_router.db.update_job_assigned", side_effect=Exception("db is down")), \
+         patch("coordinator.job_router.scheduler_pb2_grpc.WorkerServiceStub", return_value=mock_stub), \
+         patch("coordinator.job_router.grpc.insecure_channel") as mock_channel:
+        mock_channel.return_value.__enter__.return_value = MagicMock()
+
+        try:
+            router.route("job-1", "echo hi")
+            raise AssertionError("expected RuntimeError to be raised")
+        except RuntimeError as e:
+            # Still the original gRPC-unreachable error, not the DB error.
+            assert "unreachable" in str(e).lower()
+
     print("PASSED")
 
 
@@ -127,6 +159,7 @@ def test_successful_route_returns_worker_id():
 if __name__ == "__main__":
     test_deadline_exceeded_removes_worker_from_ring()
     test_unavailable_removes_worker_from_ring()
+    test_recovery_record_failure_does_not_mask_original_error()
     test_other_rpc_errors_do_not_remove_worker()
     test_successful_route_returns_worker_id()
     print("\n✅ All tests passed — job_router timeout/unreachable handling is working correctly")
