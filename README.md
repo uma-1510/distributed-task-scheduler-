@@ -51,6 +51,15 @@ docker compose stop worker-2
 
 Full interactive reference at `localhost:8000/docs` (FastAPI's built-in Swagger UI) once the stack is running.
 
+## Dashboard
+
+A React dashboard at `localhost:5173` (started by `docker compose up --build`, see [`dashboard/`](dashboard/)) polls `GET /workers` and `GET /jobs` every 5s and shows:
+
+- **Cluster health** — every worker's status, address, and last heartbeat
+- **Jobs** — command, status, assigned worker, and creation time; click a row to see that job's captured stdout and exit code
+
+Read-only — it doesn't submit jobs. For local dev outside Docker: `cd dashboard && npm install && npm run dev`.
+
 ## Chaos testing
 
 [`chaos_test.py`](chaos_test.py) automates the manual failure test above: kill a worker mid-job, repeatedly, and confirm the coordinator reassigns it.
