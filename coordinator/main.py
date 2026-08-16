@@ -3,7 +3,7 @@ import time
 sys.path.insert(0, '.')
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from contextlib import asynccontextmanager
 
 from coordinator.hash_ring import ConsistentHashRing
@@ -38,8 +38,14 @@ class JobSubmit(BaseModel):
 
 class WorkerRegister(BaseModel):
     worker_id: str
-    address:   str
-    port:      int
+    # Empty address or an out-of-range port would build an invalid gRPC
+    # target (e.g. ":50051" or "worker:99999"), which route() only finds
+    # out about later as an UNAVAILABLE error that then removes the worker
+    # from the ring — better to reject bad registrations upfront with a
+    # clear 422 than let them fail confusingly downstream. See issue #4's
+    # follow-up review.
+    address: str = Field(min_length=1)
+    port: int = Field(ge=1, le=65535)
 
 @app.post("/jobs")
 def submit_job(body: JobSubmit):
