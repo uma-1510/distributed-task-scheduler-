@@ -22,7 +22,17 @@ def execute_job(job_id: str, command: str, register_proc=None, unregister_proc=N
             command, shell=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            text=True
+            text=True,
+            # shell=True runs the command as a CHILD of /bin/sh — terminating
+            # just the shell (proc.terminate()) doesn't kill whatever the
+            # shell itself spawned (e.g. a `sleep 60` grandchild), which
+            # keeps running and keeps the stdout pipe open. Found this via
+            # live testing: shutdown() correctly called terminate(), but the
+            # worker still didn't exit and got SIGKILLed by Docker instead.
+            # start_new_session puts the shell in its own process group so
+            # the whole group (shell + everything it launched) can be
+            # signaled together with os.killpg() — see worker/main.py.
+            start_new_session=True,
         )
         if register_proc:
             register_proc(job_id, proc)

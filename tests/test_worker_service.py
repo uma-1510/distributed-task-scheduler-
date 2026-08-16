@@ -2,6 +2,7 @@
 # (issue #9). Mocks execute_job so these run without actually spawning
 # subprocesses.
 
+import signal
 import sys
 import threading
 import time
@@ -146,16 +147,23 @@ def test_queue_depth_warning_fires_above_threshold():
 
 
 def test_shutdown_terminates_in_flight_subprocess():
-    print("\n--- TEST 5: shutdown() terminates a job that already has a live subprocess ---")
+    print("\n--- TEST 5: shutdown() signals the whole process group of a live subprocess ---")
+    # execute_job runs the job with shell=True + start_new_session=True, so
+    # proc.pid IS the process group id — shutdown() must use os.killpg, not
+    # proc.terminate(), or it only kills the /bin/sh wrapper and leaves
+    # whatever it launched (e.g. `sleep 60`) running. See executor.py and
+    # main.py's shutdown() docstring for the live-testing story behind this.
     with patch("worker.main.execute_job"):
         service = WorkerService()
 
     fake_proc = MagicMock()
+    fake_proc.pid = 12345
     service._register_proc("job-running", fake_proc)
 
-    service.shutdown()
+    with patch("worker.main.os.killpg") as mock_killpg:
+        service.shutdown()
 
-    fake_proc.terminate.assert_called_once()
+    mock_killpg.assert_called_once_with(12345, signal.SIGTERM)
     print("PASSED")
 
 

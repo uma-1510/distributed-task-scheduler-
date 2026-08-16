@@ -10,6 +10,7 @@
 # (tracked via a job_id -> Popen registry), rather than only the former.
 
 import grpc
+import signal
 import sys
 import os
 import threading
@@ -88,7 +89,18 @@ class WorkerService(scheduler_pb2_grpc.WorkerServiceServicer):
         - Jobs that already have a live subprocess aren't touched by that at
           all (a reviewer correctly flagged this: shutdown(wait=False) does
           NOT stop a running proc.communicate() call). Those get an explicit
-          terminate() via the process registry from _register_proc().
+          signal via the process registry from _register_proc().
+
+        Signaling the whole process GROUP (os.killpg), not just proc itself,
+        matters because execute_job() runs the command with shell=True —
+        proc is the /bin/sh process, and plain proc.terminate() only kills
+        that shell, not whatever it launched (e.g. `sleep 60`). Found this
+        via live testing: proc.terminate() fired correctly here, but the
+        orphaned grandchild kept the stdout pipe open, proc.communicate()
+        in execute_job() never returned, and the whole worker process ended
+        up hanging until Docker's SIGKILL instead of exiting promptly.
+        start_new_session=True on the Popen call (executor.py) is what makes
+        the process its own group leader so killpg can target the group.
 
         Deliberately not waiting for termination to complete — docker
         compose's stop grace period is short, and any job that doesn't die
@@ -102,7 +114,11 @@ class WorkerService(scheduler_pb2_grpc.WorkerServiceServicer):
         for job_id, proc in procs:
             print(f"[worker] terminating in-flight job {job_id} for shutdown")
             try:
-                proc.terminate()
+                os.killpg(proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                # Already exited (e.g. finished between the shutdown call
+                # starting and us getting to it here) — nothing to do.
+                pass
             except Exception as e:
                 print(f"[worker]   failed to terminate {job_id}: {e}")
 
@@ -217,6 +233,22 @@ def serve(worker_id: str, port: int):
     server.add_insecure_port(f"[::]:{port}")
     server.start()
     print(f"[worker] {worker_id} listening on port {port}")
+
+    # Without this, `docker compose stop` (SIGTERM) kills the process
+    # directly — Python's default SIGTERM handling doesn't raise a
+    # catchable exception the way SIGINT/Ctrl+C does, so the try/finally
+    # below never runs and worker_service.shutdown() never fires. Found
+    # this via live testing: a worker with a job mid-execution took the
+    # full stop grace period and got SIGKILLed instead of exiting promptly.
+    # Calling server.stop() from the handler makes wait_for_termination()
+    # return normally, so the finally block actually executes.
+    def _handle_termination(signum, frame):
+        print(f"[worker] received signal {signum}, shutting down...")
+        server.stop(grace=5)
+
+    signal.signal(signal.SIGTERM, _handle_termination)
+    signal.signal(signal.SIGINT, _handle_termination)
+
     try:
         server.wait_for_termination()
     finally:
