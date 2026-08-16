@@ -260,6 +260,46 @@ def get_all_jobs() -> list[dict]:
     return rows
 
 
+def get_jobs_filtered(skip: int, limit: int, status: str | None = None, since=None) -> list[dict]:
+    """Paginated + optionally filtered job list — see issue #10. GET /jobs
+    used to always return every row with no LIMIT, which doesn't scale past
+    a demo-sized jobs table."""
+    with get_conn() as conn:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        query  = "SELECT * FROM jobs WHERE 1=1"
+        params: list = []
+
+        if status:
+            query += " AND status = %s"
+            params.append(status)
+        if since:
+            query += " AND created_at >= %s"
+            params.append(since)
+
+        query += " ORDER BY created_at DESC LIMIT %s OFFSET %s"
+        params.extend([limit, skip])
+
+        cur.execute(query, params)
+        rows = [dict(row) for row in cur.fetchall()]
+        cur.close()
+    return rows
+
+
+def get_workers_paginated(skip: int, limit: int) -> list[dict]:
+    """Paginated worker list — see issue #10."""
+    with get_conn() as conn:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(
+            "SELECT worker_id, address, port, status, last_heartbeat, registered_at "
+            "FROM workers ORDER BY registered_at DESC LIMIT %s OFFSET %s;",
+            (limit, skip)
+        )
+        rows = [dict(row) for row in cur.fetchall()]
+        cur.close()
+    return rows
+
+
 def get_jobs_for_worker(worker_id: str, statuses: list[str]) -> list[dict]:
     with get_conn() as conn:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
