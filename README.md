@@ -81,3 +81,7 @@ Python · FastAPI · gRPC/Protobuf · PostgreSQL · Docker Compose
 ## Contributing
 
 Branch naming, commit style, and the PR workflow this repo uses are in [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## License
+
+[MIT](LICENSE)
