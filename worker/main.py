@@ -15,20 +15,25 @@ sys.path.insert(0, '.')
 
 from proto import scheduler_pb2, scheduler_pb2_grpc
 from worker.executor import execute_job
-from common.config import COORDINATOR_HOST, COORDINATOR_PORT, HEARTBEAT_INTERVAL
+from common.config import COORDINATOR_HOST, COORDINATOR_PORT, HEARTBEAT_INTERVAL, WORKER_MAX_THREADS
 
 from worker.streamer import stream_job_output
 
 class WorkerService(scheduler_pb2_grpc.WorkerServiceServicer):
 
+    def __init__(self):
+        # Bounded pool for actually *running* jobs. This is separate from
+        # the gRPC server's own ThreadPoolExecutor (which just handles
+        # incoming RPCs) — AssignJob() used to spawn a brand new raw thread
+        # per job with no cap, so N simultaneous job assignments meant N
+        # threads. See issue #9.
+        self._job_executor = futures.ThreadPoolExecutor(
+            max_workers=WORKER_MAX_THREADS, thread_name_prefix="job-exec"
+        )
+
     def AssignJob(self, request, context):
         print(f"[worker] received job {request.job_id}: {request.command}")
-        thread = threading.Thread(
-            target=execute_job,
-            args=(request.job_id, request.command),
-            daemon=True
-        )
-        thread.start()
+        self._job_executor.submit(execute_job, request.job_id, request.command)
         return scheduler_pb2.JobResponse(job_id=request.job_id, status="accepted")
 
     def StreamJobOutput(self, request, context):
