@@ -5,6 +5,7 @@ All queries go through the module-level connection pool via get_conn()
 size is tuned with DB_POOL_MIN_CONN / DB_POOL_MAX_CONN in common/config.py.
 """
 
+import threading
 from contextlib import contextmanager
 
 import psycopg2
@@ -18,15 +19,26 @@ from common.models import JobStatus, WorkerStatus
 # heartbeating every 5s plus job traffic, that's dozens of fresh TCP +
 # Postgres-auth handshakes per second for no reason. The pool keeps a small
 # set of live connections open and hands them out/back instead.
+#
+# ThreadedConnectionPool, not SimpleConnectionPool: this app is genuinely
+# multi-threaded — the heartbeat monitor runs on its own thread, FastAPI's
+# sync route handlers each run on their own thread from FastAPI's own pool
+# — and psycopg2's docs are explicit that SimpleConnectionPool is for
+# single-threaded use only. _pool_lock guards the lazy-init check-then-set
+# so two threads racing to initialize don't each create their own pool,
+# leaving one of them orphaned and unreachable to close_pool().
 _pool = None
+_pool_lock = threading.Lock()
 
 
 def _get_pool():
     global _pool
     if _pool is None:
-        _pool = psycopg2.pool.SimpleConnectionPool(
-            DB_POOL_MIN_CONN, DB_POOL_MAX_CONN, DATABASE_URL
-        )
+        with _pool_lock:
+            if _pool is None:  # re-check: another thread may have won the race
+                _pool = psycopg2.pool.ThreadedConnectionPool(
+                    DB_POOL_MIN_CONN, DB_POOL_MAX_CONN, DATABASE_URL
+                )
     return _pool
 
 
@@ -48,9 +60,10 @@ def close_pool():
     """Call on coordinator shutdown so connections don't leak past process
     lifetime (mainly matters for tests that spin up/tear down repeatedly)."""
     global _pool
-    if _pool is not None:
-        _pool.closeall()
-        _pool = None
+    with _pool_lock:
+        if _pool is not None:
+            _pool.closeall()
+            _pool = None
 
 
 def get_connection():
