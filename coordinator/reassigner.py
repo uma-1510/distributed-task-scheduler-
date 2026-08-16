@@ -1,3 +1,10 @@
+"""Reassigns a dead worker's stuck jobs to healthy ones.
+
+Pending-marks are batched into a single UPDATE, and routing runs in
+parallel (bounded by MAX_PARALLEL_REASSIGNMENTS) instead of one job at a
+time — see issue #7.
+"""
+
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from coordinator import database as db
