@@ -82,6 +82,7 @@ async def lifespan(app: FastAPI):
     monitor.start()
     yield
     monitor.stop()
+    routing_executor.shutdown(wait=False)
     db.close_pool()
     print("[coordinator] shut down")
 
