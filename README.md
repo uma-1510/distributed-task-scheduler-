@@ -4,6 +4,10 @@ A distributed job scheduler built from scratch in Python. A FastAPI coordinator 
 
 ![architecture diagram](https://github.com/user-attachments/assets/2044a772-6aeb-4084-a239-cf530ceb9de6)
 
+## Requirements
+
+Docker and Docker Compose — that's it. Everything else (Python 3.12, Postgres, Redis) runs inside the containers `docker compose up --build` starts. Running tests or scripts outside Docker additionally needs Python 3.12+ and `pip install -r requirements.txt`.
+
 ## Quick start
 
 ```bash
