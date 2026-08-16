@@ -60,6 +60,11 @@ def _run_docker_compose(*args, worker_name):
         )
     except FileNotFoundError as e:
         raise ChaosTestError("docker CLI not found — is Docker installed and on PATH?") from e
+    except OSError as e:
+        # Covers PermissionError and other OS-level failures starting the
+        # docker CLI that aren't FileNotFoundError — without this they'd
+        # still crash the whole script with a raw traceback.
+        raise ChaosTestError(f"failed to start docker CLI: {e}") from e
     except subprocess.TimeoutExpired as e:
         raise ChaosTestError(f"'docker compose {' '.join(args)} {worker_name}' timed out") from e
 
