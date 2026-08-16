@@ -1,5 +1,8 @@
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
+
 sys.path.insert(0, '.')
 
 from fastapi import FastAPI, HTTPException
@@ -18,6 +21,22 @@ ring       = ConsistentHashRing(virtual_nodes=VIRTUAL_NODES)
 router     = JobRouter(ring)
 reassigner = Reassigner(ring, router)
 monitor    = HeartbeatMonitor(ring, reassigner)
+
+# POST /jobs used to call router.route() (a blocking gRPC call) directly on
+# whatever thread FastAPI happened to hand the request — unbounded, no
+# backpressure, so a burst of submissions could exhaust FastAPI's own
+# thread pool with no signal to the client that the coordinator is
+# overloaded. Routing now goes through this dedicated, bounded executor
+# instead. See issue #8 — and the PR description for why this bounds
+# concurrency + adds backpressure rather than fully decoupling submission
+# from routing (that would drop worker_id from the synchronous response,
+# which chaos_test.py and tests/test_failure.py both depend on today).
+ROUTING_MAX_WORKERS      = 20
+ROUTING_QUEUE_LIMIT      = 200
+ROUTING_TIMEOUT_SECONDS  = 10
+routing_executor = ThreadPoolExecutor(
+    max_workers=ROUTING_MAX_WORKERS, thread_name_prefix="job-routing"
+)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -44,12 +63,27 @@ class WorkerRegister(BaseModel):
 
 @app.post("/jobs")
 def submit_job(body: JobSubmit):
+    queue_depth = routing_executor._work_queue.qsize()
+    if queue_depth > ROUTING_QUEUE_LIMIT:
+        raise HTTPException(
+            status_code=429,
+            detail=f"coordinator overloaded (routing queue depth {queue_depth}) — try again shortly",
+        )
+
     job_id = db.create_job(body.command)
     print(f"[coordinator] job created: {job_id}")
+
+    future = routing_executor.submit(router.route, job_id, body.command)
     try:
-        worker_id = router.route(job_id, body.command)
+        worker_id = future.result(timeout=ROUTING_TIMEOUT_SECONDS)
+    except FutureTimeoutError:
+        raise HTTPException(
+            status_code=504,
+            detail=f"routing job {job_id} timed out after {ROUTING_TIMEOUT_SECONDS}s",
+        )
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
+
     return {"job_id": job_id, "status": "assigned", "worker_id": worker_id}
 
 @app.get("/jobs")
