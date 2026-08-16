@@ -1,7 +1,8 @@
 # Unit tests for coordinator/job_router.py's gRPC timeout/unreachable
-# handling (issue #5). Mocks the gRPC stub so these run without a live
-# worker process — the actual end-to-end path is exercised manually /
-# against docker compose (see PR description), not here.
+# handling (issue #5) and its ring-metadata-instead-of-DB-scan routing
+# (issue #4). Mocks the gRPC stub so these run without a live worker
+# process — the actual end-to-end path is exercised manually / against
+# docker compose (see PR description), not here.
 
 import sys
 from unittest.mock import MagicMock, patch
@@ -38,9 +39,7 @@ def test_deadline_exceeded_removes_worker_from_ring():
     mock_stub = MagicMock()
     mock_stub.AssignJob.side_effect = _rpc_error(grpc.StatusCode.DEADLINE_EXCEEDED)
 
-    with patch("coordinator.job_router.db.get_all_workers",
-               return_value=[{"worker_id": "worker-1", "address": "worker-1", "port": 50051}]), \
-         patch("coordinator.job_router.db.update_job_assigned") as mock_update, \
+    with patch("coordinator.job_router.db.update_job_assigned") as mock_update, \
          patch("coordinator.job_router.scheduler_pb2_grpc.WorkerServiceStub", return_value=mock_stub), \
          patch("coordinator.job_router.grpc.insecure_channel") as mock_channel:
         mock_channel.return_value.__enter__.return_value = MagicMock()
@@ -67,9 +66,7 @@ def test_unavailable_removes_worker_from_ring():
     mock_stub = MagicMock()
     mock_stub.AssignJob.side_effect = _rpc_error(grpc.StatusCode.UNAVAILABLE)
 
-    with patch("coordinator.job_router.db.get_all_workers",
-               return_value=[{"worker_id": "worker-1", "address": "worker-1", "port": 50051}]), \
-         patch("coordinator.job_router.db.update_job_assigned") as mock_update, \
+    with patch("coordinator.job_router.db.update_job_assigned") as mock_update, \
          patch("coordinator.job_router.scheduler_pb2_grpc.WorkerServiceStub", return_value=mock_stub), \
          patch("coordinator.job_router.grpc.insecure_channel") as mock_channel:
         mock_channel.return_value.__enter__.return_value = MagicMock()
@@ -86,15 +83,13 @@ def test_unavailable_removes_worker_from_ring():
 
 
 def test_recovery_record_failure_does_not_mask_original_error():
-    print("\n--- TEST 5: a DB failure while recording the recovery assignment doesn't hide the real error ---")
+    print("\n--- TEST 3: a DB failure while recording the recovery assignment doesn't hide the real error ---")
     router, ring = _router_with_one_worker()
 
     mock_stub = MagicMock()
     mock_stub.AssignJob.side_effect = _rpc_error(grpc.StatusCode.DEADLINE_EXCEEDED)
 
-    with patch("coordinator.job_router.db.get_all_workers",
-               return_value=[{"worker_id": "worker-1", "address": "worker-1", "port": 50051}]), \
-         patch("coordinator.job_router.db.update_job_assigned", side_effect=Exception("db is down")), \
+    with patch("coordinator.job_router.db.update_job_assigned", side_effect=Exception("db is down")), \
          patch("coordinator.job_router.scheduler_pb2_grpc.WorkerServiceStub", return_value=mock_stub), \
          patch("coordinator.job_router.grpc.insecure_channel") as mock_channel:
         mock_channel.return_value.__enter__.return_value = MagicMock()
@@ -110,21 +105,19 @@ def test_recovery_record_failure_does_not_mask_original_error():
 
 
 def test_other_rpc_errors_do_not_remove_worker():
-    print("\n--- TEST 3: A non-connectivity gRPC error leaves the worker in the ring ---")
+    print("\n--- TEST 4: A non-connectivity gRPC error leaves the worker in the ring ---")
     router, ring = _router_with_one_worker()
 
     mock_stub = MagicMock()
     mock_stub.AssignJob.side_effect = _rpc_error(grpc.StatusCode.INTERNAL, "worker blew up")
 
-    with patch("coordinator.job_router.db.get_all_workers",
-               return_value=[{"worker_id": "worker-1", "address": "worker-1", "port": 50051}]), \
-         patch("coordinator.job_router.scheduler_pb2_grpc.WorkerServiceStub", return_value=mock_stub), \
+    with patch("coordinator.job_router.scheduler_pb2_grpc.WorkerServiceStub", return_value=mock_stub), \
          patch("coordinator.job_router.grpc.insecure_channel") as mock_channel:
         mock_channel.return_value.__enter__.return_value = MagicMock()
 
         try:
             router.route("job-1", "echo hi")
-            assert False, "expected RuntimeError to be raised"
+            raise AssertionError("expected RuntimeError to be raised")
         except RuntimeError as e:
             assert "worker blew up" in str(e)
 
@@ -134,16 +127,14 @@ def test_other_rpc_errors_do_not_remove_worker():
 
 
 def test_successful_route_returns_worker_id():
-    print("\n--- TEST 4: Successful AssignJob returns the worker id, keeps it in the ring ---")
+    print("\n--- TEST 5: Successful AssignJob returns the worker id, keeps it in the ring ---")
     router, ring = _router_with_one_worker()
 
     mock_response = MagicMock(status="accepted")
     mock_stub = MagicMock()
     mock_stub.AssignJob.return_value = mock_response
 
-    with patch("coordinator.job_router.db.get_all_workers",
-               return_value=[{"worker_id": "worker-1", "address": "worker-1", "port": 50051}]), \
-         patch("coordinator.job_router.db.update_job_assigned") as mock_update, \
+    with patch("coordinator.job_router.db.update_job_assigned") as mock_update, \
          patch("coordinator.job_router.scheduler_pb2_grpc.WorkerServiceStub", return_value=mock_stub), \
          patch("coordinator.job_router.grpc.insecure_channel") as mock_channel:
         mock_channel.return_value.__enter__.return_value = MagicMock()
@@ -156,10 +147,56 @@ def test_successful_route_returns_worker_id():
     print("PASSED")
 
 
+def test_route_does_not_query_db_for_worker_lookup():
+    print("\n--- TEST 6: route() doesn't hit the DB to look up worker address/port ---")
+    # Distinctive, non-default address/port so this test can't pass just
+    # because the mocked channel accepts any target — it has to prove
+    # route() actually used the ring's metadata, not a hard-coded value.
+    ring = ConsistentHashRing()
+    ring.add_worker("worker-1", {"address": "ring-host", "port": 60001})
+    router = JobRouter(ring)
+
+    mock_stub = MagicMock()
+    mock_stub.AssignJob.return_value = MagicMock(status="accepted")
+
+    with patch("coordinator.job_router.db.get_all_workers") as mock_get_all_workers, \
+         patch("coordinator.job_router.db.update_job_assigned"), \
+         patch("coordinator.job_router.scheduler_pb2_grpc.WorkerServiceStub", return_value=mock_stub), \
+         patch("coordinator.job_router.grpc.insecure_channel") as mock_channel:
+        mock_channel.return_value.__enter__.return_value = MagicMock()
+
+        router.route("job-1", "echo hi")
+
+    # This is the actual regression test for issue #4: address/port come
+    # from the ring's own metadata (set in add_worker), not a fresh table
+    # scan on every route() call.
+    mock_get_all_workers.assert_not_called()
+    mock_channel.assert_called_once_with("ring-host:60001")
+    print("PASSED")
+
+
+def test_route_raises_clear_error_on_malformed_ring_metadata():
+    print("\n--- TEST 7: malformed ring metadata raises RuntimeError, not KeyError ---")
+    ring = ConsistentHashRing()
+    ring.add_worker("worker-1", {"address": "worker-1"})  # missing "port"
+    router = JobRouter(ring)
+
+    try:
+        router.route("job-1", "echo hi")
+        raise AssertionError("expected RuntimeError to be raised")
+    except RuntimeError as e:
+        assert "metadata" in str(e).lower()
+    except KeyError:
+        raise AssertionError("should raise a clear RuntimeError, not a bare KeyError")
+    print("PASSED")
+
+
 if __name__ == "__main__":
     test_deadline_exceeded_removes_worker_from_ring()
     test_unavailable_removes_worker_from_ring()
     test_recovery_record_failure_does_not_mask_original_error()
     test_other_rpc_errors_do_not_remove_worker()
     test_successful_route_returns_worker_id()
-    print("\n✅ All tests passed — job_router timeout/unreachable handling is working correctly")
+    test_route_does_not_query_db_for_worker_lookup()
+    test_route_raises_clear_error_on_malformed_ring_metadata()
+    print("\n✅ All tests passed — job_router timeout/unreachable/routing handling is working correctly")
