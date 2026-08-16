@@ -73,6 +73,33 @@ class WorkerService(scheduler_pb2_grpc.WorkerServiceServicer):
     def Heartbeat(self, request, context):
         return scheduler_pb2.HeartbeatResponse(acknowledged=True)
 
+    def shutdown(self):
+        """Stop accepting new job submissions and terminate whatever's
+        actually mid-execution. Two separate things, on purpose:
+
+        - cancel_futures=True on the executor cancels jobs still queued
+          (submitted but not yet started) — cheap, no subprocess exists yet.
+        - Jobs that already have a live subprocess aren't touched by that at
+          all (a reviewer correctly flagged this: shutdown(wait=False) does
+          NOT stop a running proc.communicate() call). Those get an explicit
+          terminate() via the process registry from _register_proc().
+
+        Deliberately not waiting for termination to complete — docker
+        compose's stop grace period is short, and any job that doesn't die
+        promptly gets picked up by the coordinator's reassignment path once
+        the heartbeat monitor notices this worker is gone (see #34)."""
+        self._job_executor.shutdown(wait=False, cancel_futures=True)
+
+        with self._running_procs_lock:
+            procs = list(self._running_procs.items())
+
+        for job_id, proc in procs:
+            print(f"[worker] terminating in-flight job {job_id} for shutdown")
+            try:
+                proc.terminate()
+            except Exception as e:
+                print(f"[worker]   failed to terminate {job_id}: {e}")
+
 
 # Sending each heartbeat used to block send_heartbeats()'s own loop thread
 # on requests.post() — if the coordinator was slow, the *next* heartbeat
@@ -178,12 +205,16 @@ def serve(worker_id: str, port: int):
     )
     hb_thread.start()
 
+    worker_service = WorkerService()
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-    scheduler_pb2_grpc.add_WorkerServiceServicer_to_server(WorkerService(), server)
+    scheduler_pb2_grpc.add_WorkerServiceServicer_to_server(worker_service, server)
     server.add_insecure_port(f"[::]:{port}")
     server.start()
     print(f"[worker] {worker_id} listening on port {port}")
-    server.wait_for_termination()
+    try:
+        server.wait_for_termination()
+    finally:
+        worker_service.shutdown()
 
 
 if __name__ == "__main__":
