@@ -98,7 +98,7 @@ python3 -m pytest tests/test_chaos_summary.py   # chaos_test_summary.py parsing 
 
 ## Tech stack
 
-Python · FastAPI · gRPC/Protobuf · PostgreSQL · Docker Compose
+Python · FastAPI · gRPC/Protobuf · PostgreSQL · React · Docker Compose
 
 
 ## Contributing
