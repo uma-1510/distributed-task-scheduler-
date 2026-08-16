@@ -41,4 +41,9 @@ if WORKER_MAX_THREADS < 1:
     # with a message that actually says what's wrong.
     raise ValueError(f"WORKER_MAX_THREADS must be at least 1, got {WORKER_MAX_THREADS}")
 
+# Origins allowed to make browser CORS requests to the coordinator — just
+# the dashboard/ frontend today. Comma-separated so a production deployment
+# can allow more than one origin (e.g. a staging + prod dashboard URL).
+DASHBOARD_ORIGINS = os.getenv("DASHBOARD_ORIGINS", "http://localhost:5173").split(",")
+
 
