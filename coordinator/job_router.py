@@ -49,16 +49,32 @@ class JobRouter:
         Routes job to a worker via consistent hashing.
         Returns the worker_id it was sent to.
         Raises if no workers available or gRPC call fails.
+
+        Worker address/port come from the ring's own metadata (set when the
+        worker registers) rather than a DB query — see issue #4. That means
+        this function does zero DB reads before the gRPC call; the only DB
+        write is update_job_assigned() after a successful AssignJob.
+
+        get_worker_and_metadata() does selection + metadata lookup as one
+        atomic operation under the ring's own lock — using two separate
+        calls (get_worker() then a plain dict .get()) had a race where
+        another thread's remove_worker() could run in between, returning a
+        worker_id whose metadata had just vanished. See hash_ring.py.
         """
-        worker_id = self.ring.get_worker(job_id)
+        worker_id, worker = self.ring.get_worker_and_metadata(job_id)
         if not worker_id:
             raise RuntimeError("No healthy workers available in the ring")
 
-        # Look up this worker's address and port from DB
-        workers = db.get_all_workers()
-        worker = next((w for w in workers if w["worker_id"] == worker_id), None)
+        # Address/port live on the ring already (set in add_worker()), so
+        # there's no need to hit the DB just to look up connection info for
+        # a worker we already know the id of — see issue #4.
         if not worker:
-            raise RuntimeError(f"Worker {worker_id} in ring but not found in DB")
+            raise RuntimeError(f"Worker {worker_id} in ring but has no metadata")
+        if "address" not in worker or "port" not in worker:
+            # Shouldn't happen given add_worker()'s call sites always pass
+            # both, but a malformed metadata dict here would otherwise show
+            # up as a confusing KeyError deep in an f-string.
+            raise RuntimeError(f"Worker {worker_id} metadata missing address/port: {worker}")
 
         address = f"{worker['address']}:{worker['port']}"
         print(f"[router] routing job {job_id} → {worker_id} at {address}")
