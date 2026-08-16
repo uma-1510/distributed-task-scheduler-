@@ -73,11 +73,21 @@ Latest committed run ([`chaos_test_results.json`](chaos_test_results.json)): **1
 
 ## Testing
 
+Automated, run standalone with `pip install -r requirements.txt` (no live cluster needed — DB/network calls are mocked):
+
 ```bash
-python3 tests/test_hash_ring.py         # consistent hashing (7 tests)
-python3 tests/test_chaos_summary.py     # chaos results parsing
-python3 tests/test_worker_heartbeats.py # heartbeat decoupling
+python3 tests/test_hash_ring.py               # consistent hashing
+python3 tests/test_job_router.py               # gRPC timeout/unreachable-worker handling
+python3 tests/test_heartbeat_monitor.py         # batched dead-worker updates
+python3 tests/test_reassigner.py                # batched pending-marks + parallel routing
+python3 tests/test_pagination.py                # GET /jobs, /workers query building
+python3 tests/test_submission_backpressure.py   # rate limiter + routing backpressure
+python3 tests/test_worker_heartbeats.py         # decoupled heartbeat sending
+python3 tests/test_worker_service.py            # bounded job-execution thread pool
+python3 -m pytest tests/test_chaos_summary.py   # chaos_test_summary.py parsing (needs pytest's import mode)
 ```
+
+`tests/test_failure.py` and `tests/test_reassignment.py` are manual scripts that need a running cluster (`docker compose up`) and a human to kill a worker on cue — not part of the automated set above.
 
 ## Key design decisions
 
