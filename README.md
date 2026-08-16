@@ -39,9 +39,9 @@ docker compose stop worker-2
 | Method | Endpoint | Description |
 |---|---|---|
 | POST | `/jobs` | Submit a job |
-| GET | `/jobs` | List jobs |
+| GET | `/jobs?skip=&limit=&status=&since=` | List jobs — paginated (`skip`/`limit`, default `limit=200`) and optionally filtered by `status` or `since` (ISO timestamp) |
 | GET | `/jobs/{id}` | Job status + output |
-| GET | `/workers` | Worker status |
+| GET | `/workers?skip=&limit=` | Worker status — paginated (default `limit=100`) |
 | GET | `/debug/ring` | Inspect hash ring state |
 | POST | `/workers/register`, `/workers/{id}/heartbeat` | Internal — used by workers, not clients |
 
