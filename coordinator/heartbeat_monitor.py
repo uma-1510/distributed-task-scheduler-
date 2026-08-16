@@ -1,5 +1,13 @@
+"""Background heartbeat monitor.
+
+Dead-worker DB status updates are batched (one UPDATE per check cycle, not
+one per dead worker) and reassignment runs on a background executor rather
+than blocking the monitor loop — see issue #6.
+"""
+
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from common.config import HEARTBEAT_TIMEOUT, WORKER_STARTUP_GRACE
 from common.models import WorkerStatus
@@ -11,6 +19,16 @@ class HeartbeatMonitor:
         self.ring        = ring
         self.reassigner  = reassigner
         self._stop_event = threading.Event()
+        # Reassignment (which does its own DB writes + gRPC routing calls
+        # per stuck job) used to run synchronously inside the monitor loop.
+        # If one dead worker had a lot of stuck jobs, or a route() call hit
+        # the new gRPC timeout from issue #5, that could delay the *next*
+        # 5-second check cycle — meaning other workers' failures would be
+        # detected late. Running it on a small executor instead decouples
+        # "detect a dead worker" from "finish reassigning its jobs".
+        self._reassign_executor = ThreadPoolExecutor(
+            max_workers=5, thread_name_prefix="reassign"
+        )
 
     def start(self):
         thread = threading.Thread(
@@ -22,15 +40,25 @@ class HeartbeatMonitor:
         print("[monitor] heartbeat monitor started")
 
     def stop(self):
+        # Only signal the loop to exit here — shutting down the executor
+        # immediately would be a race. shutdown() (any wait= value) makes
+        # ALL subsequent submit() calls raise RuntimeError right away, even
+        # from an in-flight _check_workers() cycle that just detected dead
+        # workers and is about to submit their reassignments. Executor
+        # shutdown happens in _monitor_loop()'s finally block instead, so
+        # it only runs after the loop has actually exited.
         self._stop_event.set()
 
     def _monitor_loop(self):
-        while not self._stop_event.is_set():
-            try:
-                self._check_workers()
-            except Exception as e:
-                print(f"[monitor] error during check: {e}")
-            time.sleep(5)
+        try:
+            while not self._stop_event.is_set():
+                try:
+                    self._check_workers()
+                except Exception as e:
+                    print(f"[monitor] error during check: {e}")
+                time.sleep(5)
+        finally:
+            self._reassign_executor.shutdown(wait=False)
 
     @staticmethod
     def _strip_tz(dt):
@@ -44,6 +72,11 @@ class HeartbeatMonitor:
     def _check_workers(self):
         workers = db.get_all_workers()
         now     = datetime.now()
+
+        # Collect this cycle's dead workers instead of writing to the DB
+        # inside the loop — one batch UPDATE at the end instead of one
+        # round-trip per dead worker. See issue #6.
+        newly_dead = []
 
         for worker in workers:
             worker_id      = worker["worker_id"]
@@ -66,11 +99,36 @@ class HeartbeatMonitor:
 
             if seconds_since > HEARTBEAT_TIMEOUT:
                 print(f"[monitor] ⚠️  {worker_id} missed heartbeat ({seconds_since:.1f}s) — marking DEAD")
-                self._handle_dead_worker(worker_id)
+                newly_dead.append(worker_id)
             else:
                 print(f"[monitor] ✅ {worker_id} healthy ({seconds_since:.1f}s since last ping)")
 
-    def _handle_dead_worker(self, worker_id: str):
-        self.ring.remove_worker(worker_id)
-        db.update_worker_status(worker_id, WorkerStatus.DEAD)
+        if newly_dead:
+            self._handle_dead_workers(newly_dead)
+
+    def _handle_dead_workers(self, worker_ids: list[str]):
+        for worker_id in worker_ids:
+            self.ring.remove_worker(worker_id)
+
+        # Single UPDATE for every worker that died this cycle, instead of
+        # one per worker.
+        db.update_workers_status_batch(worker_ids, WorkerStatus.DEAD)
+
+        for worker_id in worker_ids:
+            future = self._reassign_executor.submit(self._reassign_safely, worker_id)
+            # Attach a callback rather than calling future.result() here —
+            # that would just re-introduce the blocking we're trying to
+            # remove.
+            future.add_done_callback(self._log_reassign_outcome)
+
+    def _reassign_safely(self, worker_id: str):
         self.reassigner.reassign_jobs_from(worker_id)
+        return worker_id
+
+    @staticmethod
+    def _log_reassign_outcome(future):
+        try:
+            worker_id = future.result()
+            print(f"[monitor] reassignment finished for {worker_id}")
+        except Exception as e:
+            print(f"[monitor] reassignment task raised: {e}")
