@@ -36,6 +36,20 @@ class WorkerService(scheduler_pb2_grpc.WorkerServiceServicer):
         self._job_executor = futures.ThreadPoolExecutor(
             max_workers=WORKER_MAX_THREADS, thread_name_prefix="job-exec"
         )
+        # job_id -> subprocess.Popen for jobs currently executing. Lets
+        # shutdown() actually terminate a running job's process, not just
+        # cancel queued-but-not-started futures (cancel_futures=True alone
+        # doesn't touch a job that already has a live subprocess).
+        self._running_procs_lock = threading.Lock()
+        self._running_procs = {}
+
+    def _register_proc(self, job_id, proc):
+        with self._running_procs_lock:
+            self._running_procs[job_id] = proc
+
+    def _unregister_proc(self, job_id):
+        with self._running_procs_lock:
+            self._running_procs.pop(job_id, None)
 
     def AssignJob(self, request, context):
         # _work_queue is a private attribute of ThreadPoolExecutor, but it's
@@ -46,7 +60,10 @@ class WorkerService(scheduler_pb2_grpc.WorkerServiceServicer):
             print(f"[worker] ⚠️  job queue depth is {queue_depth} — worker may be falling behind")
 
         print(f"[worker] received job {request.job_id}: {request.command} (queue depth: {queue_depth})")
-        self._job_executor.submit(execute_job, request.job_id, request.command)
+        self._job_executor.submit(
+            execute_job, request.job_id, request.command,
+            self._register_proc, self._unregister_proc,
+        )
         return scheduler_pb2.JobResponse(job_id=request.job_id, status="accepted")
 
     def StreamJobOutput(self, request, context):
